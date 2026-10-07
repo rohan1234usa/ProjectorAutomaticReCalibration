@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 out/
 .DS_Store
+# Claude Code: worktrees the desktop app creates inside the project, and personal settings
+.claude/worktrees/
+.claude/settings.local.json

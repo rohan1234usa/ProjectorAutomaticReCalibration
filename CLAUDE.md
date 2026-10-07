@@ -137,6 +137,7 @@ exists.
 
 ```
 CLAUDE.md
+README.md               # short public overview and quick start                     [done]
 pyproject.toml          # uv project, no package build: `uv sync`, `uv run pytest`   [done]
 detector.yaml           # section 10 defaults                                       [done]
 sim/                    # simulator: never imported by detector/; imports nothing from detector/

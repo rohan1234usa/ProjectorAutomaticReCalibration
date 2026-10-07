@@ -25,6 +25,7 @@ Physics, in the order light goes through it:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cached_property
 
 import cv2
 import numpy as np
@@ -91,13 +92,20 @@ class Camera:
         return float(np.sqrt(abs(jacobian_det(self.h_mm_to_px, centre_mm[0], centre_mm[1]))))
 
     def vignetting_map(self) -> np.ndarray:
-        """Fraction of light reaching each pixel, (h, w) float32: 1 at the centre."""
+        """Fraction of light reaching each pixel, (h, w) float32, read-only: 1 at the centre."""
+        return self._vignetting
+
+    @cached_property
+    def _vignetting(self) -> np.ndarray:
+        # The camera never changes, so the map is built once (it costs ~45 ms at 3840 x 1600).
         w, h = self.resolution
         x = (np.arange(w) - (w - 1) / 2)[None, :]
         y = (np.arange(h) - (h - 1) / 2)[:, None]
         r2 = (x**2 + y**2) / ((w / 2) ** 2 + (h / 2) ** 2)
         a = (1.0 - self.vignetting) ** -0.5 - 1.0  # so that the corners get 1 - vignetting
-        return ((1.0 + a * r2) ** -2).astype(np.float32)
+        vignetting = ((1.0 + a * r2) ** -2).astype(np.float32)
+        vignetting.setflags(write=False)
+        return vignetting
 
     def optical_image(
         self, radiance: np.ndarray, grid: ScreenGrid, supersample: int = 1, surround: float = 0.0

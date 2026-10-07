@@ -176,8 +176,8 @@ rectangles cannot overlap along a diagonal while their union stays a rectangle.
 Two changes so this cannot be misread again:
 - `scripts/visualize.py` now adds a second panel with the true geometry drawn on the frame:
   box A, box B, the overlap polygon and the content rect;
-- the slide's bare diagonal is replaced by a framed line chart that still crosses the
-  overlap.
+- the slide's bare diagonal and its centre circle are replaced by a framed line chart that
+  still crosses the overlap.
 
 ### Planning estimates (to confirm in the phase that builds each piece)
 

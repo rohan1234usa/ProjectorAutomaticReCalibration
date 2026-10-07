@@ -56,7 +56,8 @@ class Projector:
             raise ValueError(f"projector {self.name}: framebuffer/blend do not match resolution {w}x{h}")
         light = np.power(np.clip(framebuffer, 0.0, 1.0), np.float32(self.gamma), dtype=np.float32)
         light *= blend[..., None]
-        light *= np.asarray(self.color_balance, dtype=np.float32) * np.float32((1.0 - self.black_level) * self.brightness)
+        signal_gain = np.float32((1.0 - self.black_level) * self.brightness)
+        light *= np.asarray(self.color_balance, dtype=np.float32) * signal_gain
         light += np.float32(self.black_level * self.brightness)
         return light
 
@@ -72,7 +73,7 @@ def area_ratio(h_cal: np.ndarray, h_actual: np.ndarray, resolution: tuple[int, i
 def project(light: np.ndarray, h_cal: np.ndarray, h_actual: np.ndarray, grid: ScreenGrid, out: np.ndarray) -> None:
     """Add one projector's irradiance onto the screen grid `out` (rows, cols, 3), in place.
 
-    `h_actual` is where the projector's pixels really land now. In Phase 1 it equals `h_cal`;
+    `h_actual` is where the projector's pixels really land now. When aligned it equals `h_cal`;
     a drift changes only `h_actual`, because the framebuffer was built for `h_cal`.
     """
     h, w = light.shape[:2]

@@ -1,8 +1,8 @@
 """Content: the pictures the calibration software is asked to show.
 
 Content is authored like any video signal. It is an RGB image of gamma-encoded code values in
-[0, 1] that fills the content rect; the projector's gamma later turns codes into light. Phase 1
-provides:
+[0, 1] that fills the content rect; the projector's gamma later turns codes into light. So far
+it provides:
   * flat fields, to test that the blend is seamless;
   * black, to see the black level;
   * a procedural text slide.

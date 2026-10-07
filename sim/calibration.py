@@ -10,7 +10,8 @@ content at the screen point where that pixel lands (geometric correction), then 
 that pixel's blend weight (photometric blending). Nothing changes until the next calibration.
 So when a projector physically drifts, its framebuffer is still made for the old geometry and
 the picture lands in the wrong place. That mismatch is exactly what the detector looks for.
-This object is also the one thing besides camera frames that the detector may read.
+Besides camera frames, this information is the one thing the detector may read. The harness
+hands it over as plain data, since the detector never imports the simulator.
 
 Blend rule. Where both projectors cover a point, their weights must add up to 1 in linear
 light, so the sum is seamless. Each projector must also fade to exactly 0 at each of its edges
