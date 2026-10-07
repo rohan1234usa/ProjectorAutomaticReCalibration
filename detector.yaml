@@ -1,0 +1,19 @@
+# Detector configuration (CLAUDE.md section 10). Names are the contract; defaults are
+# starting guesses. Loaded by detector.config.DetectorConfig.from_yaml.
+ADJUSTABLE_INTERVAL_IN_SECONDS: 30      # boundary check cadence
+SAFETY_CHECK_S: 900                     # timed artifact check regardless of boundary result
+TRUSTED_WINDOW_S: 600                   # after calibration: refine boxes, learn references
+POOL_FRAMES: 60                         # usable frames pooled per artifact check
+TOLERANCE_MM: 1.7                       # ≈ 1 arcmin at 6 m; swept in evaluation
+TRIGGER_MM: 0.85                        # boundary offset that triggers the artifact check
+AGREE_MM: 1.4                           # layers "agree" within this
+YES_VOTES: [3, 4]                       # K of N intervals
+CLEAR_RATIO: 0.5
+CORE_MIN_WEIGHT: 0.2
+TILE_MM: 64
+CTRL_MARGIN_MM: 40
+EDGE_PIECE_MM: 80
+CANVAS_PX_PER_MM: 2.0
+HASH_MATCH_BITS: 6
+MIN_PEAK_SNR: 6.0
+MIN_GOOD_TILES: 3
