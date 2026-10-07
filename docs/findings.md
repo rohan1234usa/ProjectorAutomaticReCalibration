@@ -134,3 +134,72 @@ to 3.1e-3 at W = 58 px, and ≤ 6.4e-4 at demo scale. That is why cosine is the 
   - black-level uplift;
   - room-bounce light, which raises the unlit level and adds shot noise but leaves the raster
     step itself unchanged.
+
+## 2026-10-07 — Replan after the original pseudocode
+
+The original pseudocode (Oct 1, 2026) is now in `docs/research/pseudocode.md`, and CLAUDE.md
+has been rewritten around it.
+
+### What the pseudocode changed, and what it did not
+
+**Kept from CLAUDE.md** (confirmed with you):
+- boundary analysis of each projector's rectangle is primary, with the rectangles inferred
+  from the non-overlap sections;
+- the overlap check is secondary and triggered;
+- any arrangement, with the rectangles at angles;
+- a camera that sees the whole picture;
+- mm units.
+
+**Taken from the pseudocode:**
+- the concrete overlap-check methods: the cepstral echo with control tiles beside the
+  overlap, the seam (hotspot) fit that separates shift from lamp gain and trend, and dark
+  raster edges;
+- frame routing (skip / dark / flat / textured) and pooling;
+- reference mode with Wiener kernels, now a first-class phase right after blind mode;
+- the decision rule (3 of 4 votes, clear below 0.5 × tolerance, `None` holds);
+- the edge-case table and the stress tests (held slide, blank band, dark film, 15% lamp dim).
+
+**Dropped:**
+- matched-frame SSIM: it changes with content, and reference mode does its job;
+- colour fringing;
+- `HASH_MATCH_BITS`.
+
+The camera becomes mono (16-bit linear luminance).
+
+### The "diagonal overlap" in the Phase 1 image was content, not geometry
+
+In `out/phase1/view.png` the overlap is the full-height vertical band in the middle (410 mm).
+When aligned, the blend makes it invisible across the lit slide, and it showed only as
+doubled black in the border. The diagonal line was a feature drawn in the slide: two
+rectangles cannot overlap along a diagonal while their union stays a rectangle.
+
+Two changes so this cannot be misread again:
+- `scripts/visualize.py` now adds a second panel with the true geometry drawn on the frame:
+  box A, box B, the overlap polygon and the content rect;
+- the slide's bare diagonal is replaced by a framed line chart that still crosses the
+  overlap.
+
+### Planning estimates (to confirm in the phase that builds each piece)
+
+These come from read-only experiments run during replanning, on the existing simulator and
+on synthetic overlap data. They are not yet verified by tests:
+
+| Quantity | Estimate | Consequence |
+|---|---|---|
+| Blind echo floor, whole-screen camera (0.87 camera px/mm) | resolves only ≥ 2.5–3 mm; 1.5–2 mm read as ~2.3–2.6 mm | The blind overlap check can *confirm* but not *detect* threshold-level offsets (1.7 mm) with this camera. The boundary layer must carry detection; zoom (floor ≈ 1.4 mm) or reference mode closes the gap. |
+| Echo on the rectified canvas | peaks lock to multiples of the camera pitch | Echo tiles are cut on the camera grid. |
+| Robust z of aligned twins | 7.5–12.6, above `MIN_PEAK_SNR` 6 | A fixed threshold alone would false-alarm; hence `NULL_FACTOR` × control-vs-control null. |
+| Black-level edge, 80 mm piece | 0.11 mm per frame, 0.02 mm over 30 frames; content border 0.004 mm | The boundary layer has ample precision at whole-screen resolution. |
+| Hotspot sensitivity, cosine ramp over 394 px | 0.40% per projector px; block noise 0.03% per flat frame | Detectable on flat content. |
+| Reference kernel offset | 0.5 → 0.47, 1 → 1.01, 2 → 1.96, 4 → 3.89 mm | No resolution floor. |
+| Marker detection, passive ArUco 80 mm | ambient 0.0003: 0 of 6 found in single frames; 0.02: 6/6, homography error 0.12 mm; corners biased ~0.9 px inward | Default ambient 0.02; fit from marker centres; a `dark_room` scenario. |
+| Raster per-pixel SNR at ambient 0.02 | 0.38 (vs 1.5 at 0.0003) | Still recoverable by averaging along edges and over frames. |
+| Mono vs RGB render | 0.22 s and 1.05 GB vs 0.38 s and 2.28 GB; 16-bit PNG 7.8 MB vs 24 MB | Mono is the default; frames are written to disk only on request. |
+
+### Config
+
+- Removed `HASH_MATCH_BITS`.
+- Added the knobs the methods use: `SAMPLE_EVERY_S`, `MIN_OFFSET_MM`, `INLIER_MM`,
+  `HOLD_MAX_INTERVALS`, routing levels, evidence-quality gates, and the reference-mode
+  parameters (CLAUDE.md §10).
+- `detector.yaml`, the dataclass and the tests are kept identical.

@@ -1,19 +1,54 @@
 # Detector configuration (CLAUDE.md section 10). Names are the contract; defaults are
 # starting guesses. Loaded by detector.config.DetectorConfig.from_yaml.
+
+# cadence
 ADJUSTABLE_INTERVAL_IN_SECONDS: 30      # boundary check cadence
-SAFETY_CHECK_S: 900                     # timed artifact check regardless of boundary result
-TRUSTED_WINDOW_S: 600                   # after calibration: refine boxes, learn references
-POOL_FRAMES: 60                         # usable frames pooled per artifact check
+SAFETY_CHECK_S: 900                     # timed overlap check regardless of boundary result
+TRUSTED_WINDOW_S: 600                   # after calibration: refine boxes, fill baseline pools
+SAMPLE_EVERY_S: 0.5                     # frame sampling period for the pools
+POOL_FRAMES: 60                         # usable frames pooled per overlap check
+
+# thresholds in mm
 TOLERANCE_MM: 1.7                       # ≈ 1 arcmin at 6 m; swept in evaluation
-TRIGGER_MM: 0.85                        # boundary offset that triggers the artifact check
+TRIGGER_MM: 0.85                        # boundary offset that triggers the overlap check
 AGREE_MM: 1.4                           # layers "agree" within this
+MIN_OFFSET_MM: 1.5                      # smallest echo the cepstrum can separate from its origin peak
+INLIER_MM: 0.7                          # RANSAC inlier distance for the smooth motion field
+
+# decision
 YES_VOTES: [3, 4]                       # K of N intervals
-CLEAR_RATIO: 0.5
-CORE_MIN_WEIGHT: 0.2
+CLEAR_RATIO: 0.5                        # back to NO only below CLEAR_RATIO × TOLERANCE_MM
+HOLD_MAX_INTERVALS: 2                   # intervals a boundary-vs-artifacts disagreement may hold
+
+# geometry on the mm canvas
+CORE_MIN_WEIGHT: 0.2                    # core = both blend weights ≥ this (≈ the middle 60% of a linear ramp)
 TILE_MM: 64
 CTRL_MARGIN_MM: 40
 EDGE_PIECE_MM: 80
 CANVAS_PX_PER_MM: 2.0
-HASH_MATCH_BITS: 6
-MIN_PEAK_SNR: 6.0
-MIN_GOOD_TILES: 3
+
+# frame routing
+MOTION_LEVEL: 0.02                      # mean |frame difference| above this (× white): motion or a cut, skip
+MAX_CLIPPED: 0.002                      # fraction of saturated pixels above this: skip
+DARK_LEVEL: 0.003                       # region mean below this (× white): dark frame
+MIN_TILE_EDGES: 0.02                    # edge density a tile needs to count as textured
+VARIETY_MAX_NCC: 0.98                   # blind mode keeps a frame only if it differs from the last kept
+FIDUCIAL_MOVE_PX: 0.3                   # marker motion above this = camera moved: re-solve, never YES
+
+# evidence quality
+MIN_PEAK_SNR: 6.0                       # a cepstral or kernel peak must stand this far above the noise
+NULL_FACTOR: 1.5                        # ... and above NULL_FACTOR × the control-vs-control null
+ECHO_FLOOR_CAMERA_PX: 2.5               # the cepstrum cannot resolve echoes below this many camera px
+MIN_GOOD_TILES: 3                       # fewer valid tiles -> "can't tell"
+MIN_TILE_FRAMES: 20                     # textured frames an echo tile needs
+MIN_SEAM_FRAMES: 20                     # lit (or dark) frames a seam block needs
+MIN_EDGE_SNR: 4.0                       # pooled SNR an edge piece needs to count this interval
+LINE_INLIER_FRAC: 0.6                   # tiles must agree on one smooth field at least this often
+FLAT_MAX_DEV: 0.01                      # a hotspot block is "flat" if its sub-blocks agree within this
+LAMP_WARN: 0.03                         # fitted lamp gain off by more than this = lamp warning
+
+# reference mode
+REFERENCE_MODE: auto                    # auto | on | off
+WIENER_LAMBDA: 0.01                     # Wiener regularisation, as a fraction of the mean source power
+SOURCE_RING: 10                         # source frames kept for matching (the camera lags by a few frames)
+MATCH_MIN_NCC: 0.9                      # a source frame must match the camera frame at least this well

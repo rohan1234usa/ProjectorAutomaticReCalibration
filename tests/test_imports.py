@@ -1,9 +1,14 @@
-"""Hard rule from CLAUDE.md section 3: detector/ imports nothing from sim/."""
+"""Hard rules from CLAUDE.md section 3: detector/ imports nothing from sim/, and sim/ nothing from detector/.
+
+Only the harness (eval/, scripts/) may use both.
+"""
 
 import ast
 from pathlib import Path
 
-DETECTOR = Path(__file__).resolve().parents[1] / "detector"
+import pytest
+
+REPO = Path(__file__).resolve().parents[1]
 
 
 def _imported_modules(path: Path) -> set[str]:
@@ -17,11 +22,12 @@ def _imported_modules(path: Path) -> set[str]:
     return names
 
 
-def test_detector_never_imports_sim():
-    files = sorted(DETECTOR.rglob("*.py"))
-    assert files, "detector package not found"
+@pytest.mark.parametrize("package, forbidden", [("detector", "sim"), ("sim", "detector")])
+def test_packages_stay_separate(package, forbidden):
+    files = sorted((REPO / package).rglob("*.py"))
+    assert files, f"{package} package not found"
     offenders = {
-        str(f.relative_to(DETECTOR.parent)): sorted(m for m in _imported_modules(f) if m.split(".")[0] == "sim")
+        str(f.relative_to(REPO)): sorted(m for m in _imported_modules(f) if m.split(".")[0] == forbidden)
         for f in files
     }
     assert not {f: m for f, m in offenders.items() if m}

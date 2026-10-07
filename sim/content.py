@@ -7,8 +7,10 @@ provides:
   * black, to see the black level;
   * a procedural text slide.
 
-The slide's text, thin diagonal line and flat gray band run across the whole width. Seams and
-ghosts only show where content crosses the overlap, so the test content must cross it.
+The slide's text, line chart and flat gray band run across the whole width. Seams and ghosts
+only show where content crosses the overlap, so the test content must cross it. Every feature
+is drawn as obvious slide content (text, a framed chart, bars): a bare diagonal line across the
+slide was once mistaken for a projector boundary.
 
 An optional black border (``border_frac``) keeps the picture away from the raster edges, so
 each projector's faint black-level raster shows around it.
@@ -90,10 +92,30 @@ def slide(size: tuple[int, int], rng: np.random.Generator) -> np.ndarray:
             x = round((x0 + j * 0.04) * w)
             colour = ((220, 120, 40), (60, 150, 80), (70, 110, 200), (200, 180, 50), (150, 80, 170))[(j + k) % 5]
             cv2.rectangle(img, (x, round(92 * u - bh)), (x + round(0.025 * w), round(92 * u)), colour, -1)
-    cv2.circle(img, (w // 2, round(78 * u)), round(12 * u), (200, 60, 50), max(1, round(0.4 * u)), cv2.LINE_AA)
-    cv2.line(img, (round(0.3 * w), round(95 * u)), (round(0.7 * w), round(14 * u)), (40, 40, 44),
-             max(1, round(0.25 * u)), cv2.LINE_AA)
+    _line_chart(img, rng, x0=round(0.30 * w), x1=round(0.70 * w), y0=round(66 * u), y1=round(94 * u), u=u)
     return img.astype(np.float32) / 255.0
+
+
+def _line_chart(img: np.ndarray, rng: np.random.Generator, x0: int, x1: int, y0: int, y1: int, u: float) -> None:
+    """A framed line chart: a zig-zag series with circle markers, axes and ticks, in the slide's centre.
+
+    Its sloped segments and closed markers cross the overlap, which is where ghosting shows best.
+    """
+    thin = max(1, round(0.25 * u))
+    cv2.rectangle(img, (x0, y0), (x1, y1), (255, 255, 255), -1)
+    cv2.rectangle(img, (x0, y0), (x1, y1), (90, 90, 96), thin)
+    for k in range(1, 4):  # horizontal grid lines
+        y = round(y0 + k * (y1 - y0) / 4)
+        cv2.line(img, (x0, y), (x1, y), (205, 205, 210), thin)
+    n = 9
+    xs = np.linspace(x0 + 0.06 * (x1 - x0), x1 - 0.06 * (x1 - x0), n)
+    ys = y1 - (0.15 + 0.7 * rng.uniform(0, 1, n)) * (y1 - y0)
+    pts = np.stack([xs, ys], axis=1).round().astype(np.int32)
+    cv2.polylines(img, [pts], False, (40, 40, 44), max(1, round(0.4 * u)), cv2.LINE_AA)
+    for x, y in pts:
+        cv2.circle(img, (int(x), int(y)), round(1.2 * u), (200, 60, 50), -1, cv2.LINE_AA)
+    for x in xs:  # x-axis ticks
+        cv2.line(img, (round(x), y1), (round(x), y1 - round(1.5 * u)), (90, 90, 96), thin)
 
 
 _KINDS = {"flat", "black", "slide"}
