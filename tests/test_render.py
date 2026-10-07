@@ -9,10 +9,11 @@ import numpy as np
 import pytest
 
 from sim.content import flat, make_content
-from sim.planar import translation, warp_linear
+from sim.planar import homography_from_points, raster_corners, rect_polygon, translation, warp_linear
 from sim.projector import project
 from sim.screen import ScreenGrid
 from tests.scenes import (
+    SCREEN_MM,
     corner_setup,
     grid_masks,
     make_renderer,
@@ -128,6 +129,26 @@ def test_black_content_shows_each_raster(quality, edge_tol_mm):
         i = np.nonzero((vs[:-1] < half) & (vs[1:] >= half) if rising else (vs[:-1] >= half) & (vs[1:] < half))[0][0]
         crossing = xs[i] + (half - vs[i]) * (xs[i + 1] - xs[i]) / (vs[i + 1] - vs[i])
         assert abs(crossing - true_x) < edge_tol_mm
+
+
+def test_coarse_projector_edge_light_is_not_clipped():
+    """A projector with 4x coarser pixels than the grid's finest still spills half a pixel of light.
+
+    Bilinear reconstruction ramps from full at the last pixel centre to zero half a pixel past the
+    box edge; the warp window must cover that whole ramp, however coarse the projector.
+    """
+    res = (60, 34)  # 250 mm wide -> 4.17 mm per pixel
+    box = rect_polygon(100.0, 50.0, 350.0, 191.67)
+    h = homography_from_points(raster_corners(res), box)
+    grid = ScreenGrid.covering(SCREEN_MM, 2.0 / 1.0417)  # sized for a 1.04 mm/px partner
+    out = np.zeros((*grid.shape, 3), np.float32)
+    project(np.ones((res[1], res[0], 3), np.float32), h, h, grid, out)
+    pitch = 250.0 / res[0]
+    x = (np.arange(grid.shape[1]) + 0.5) / grid.px_per_mm
+    row = out[int(round(120.0 * grid.px_per_mm - 0.5)), :, 0]
+    tail = (x > 350.0) & (x < 350.0 + pitch / 2)
+    assert np.allclose(row[tail], 0.5 - (x[tail] - 350.0) / pitch, atol=1e-4)
+    assert np.all(row[x > 350.0 + pitch / 2 + 0.01] == 0.0)
 
 
 def test_zoom_conserves_light():

@@ -35,9 +35,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from sim.content import border_px
 from sim.planar import apply_h, clip_convex, points_in_convex, rect_polygon
 from sim.render import QUALITY
 from sim.scenario import Scene, load_scene
+
+Regions = tuple[np.ndarray, dict[str, np.ndarray]]  # sample points (rows, cols, 2) and region masks
 
 # Overlay colours (RGB).
 _COLOR_A = (255, 150, 30)
@@ -61,12 +64,12 @@ def white_electrons(scene: Scene) -> float:
 
 def border_mm(scene: Scene) -> float:
     """Width of the content's black border on the screen (0 when the content has none)."""
-    x0, y0, x1, y1 = scene.setup.content_rect_mm
-    hc = scene.setup.content_size()[1]
-    return round(float(scene.content.get("border_frac", 0.0)) * hc) * (y1 - y0) / hc
+    _, y0, _, y1 = scene.setup.content_rect_mm
+    size = scene.setup.content_size()
+    return border_px(scene.content, size) * (y1 - y0) / size[1]
 
 
-def region_masks(scene: Scene) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+def region_masks(scene: Scene) -> Regions:
     """Screen sample points (rows, cols, 2) and boolean masks of the regions that matter.
 
     only_a / only_b / overlap: lit by one or both projectors. unlit: on the screen, outside both
@@ -110,11 +113,14 @@ def deepest_point(pts: np.ndarray, mask: np.ndarray, toward: tuple[float, float]
     return pts[r, c], float(depth[r, c])
 
 
-def measure_levels(scene: Scene, electrons: np.ndarray) -> dict[str, dict[str, float] | None]:
+def measure_levels(
+    scene: Scene, electrons: np.ndarray, regions: Regions | None = None
+) -> dict[str, dict[str, float] | None]:
     """Mean and per-pixel spread (electrons, all channels) in a small square at each patch."""
-    pts, masks = region_masks(scene)
+    pts, masks = regions or region_masks(scene)
     centre = (scene.screen.size_mm[0] / 2, scene.screen.size_mm[1] / 2)
     px_per_mm = scene.camera.px_per_mm_at_centre()
+    frame_h, frame_w = electrons.shape[:2]
     out: dict[str, dict[str, float] | None] = {}
     for name in ("unlit", "black_a", "black_b", "black_overlap"):
         found = deepest_point(pts, masks[name], centre)
@@ -124,6 +130,9 @@ def measure_levels(scene: Scene, electrons: np.ndarray) -> dict[str, dict[str, f
         point, depth_mm = found
         half = max(1, int(0.5 * depth_mm * px_per_mm))  # the square stays inside the inscribed circle
         u, v = np.rint(apply_h(scene.camera.h_mm_to_px, point)).astype(int)
+        if not (half <= u < frame_w - half and half <= v < frame_h - half):
+            out[name] = None  # the camera does not see this patch whole
+            continue
         patch = electrons[v - half : v + half + 1, u - half : u + half + 1]
         out[name] = {"mean_e": round(float(patch.mean()), 2), "std_e": round(float(patch.std()), 2),
                      "at_mm": [round(float(point[0]), 1), round(float(point[1]), 1)]}
@@ -145,7 +154,7 @@ def _dashed(img: np.ndarray, poly_px: np.ndarray, color: tuple[int, int, int], t
             cv2.line(img, tuple(_fixed_point(a)), tuple(_fixed_point(b)), color, thickness, cv2.LINE_AA, shift=4)
 
 
-def overlay_panel(scene: Scene, view: np.ndarray) -> np.ndarray:
+def overlay_panel(scene: Scene, view: np.ndarray, regions: Regions | None = None) -> np.ndarray:
     """The frame dimmed to gray, with box A, box B, their overlap and the content rect drawn on it."""
     img = np.repeat((view.mean(axis=2, keepdims=True) * 0.55).astype(np.uint8), 3, axis=2)
     h_cam = scene.camera.h_mm_to_px
@@ -165,7 +174,7 @@ def overlay_panel(scene: Scene, view: np.ndarray) -> np.ndarray:
             dash=6.0 * t)
 
     scale = img.shape[0] * 0.035 / cv2.getTextSize("H", cv2.FONT_HERSHEY_SIMPLEX, 1.0, 1)[0][1]
-    pts, masks = region_masks(scene)
+    pts, masks = regions or region_masks(scene)
     centre = tuple(np.vstack([box_a, box_b]).mean(axis=0))
     for text, region, color in (("A only", "only_a", _COLOR_A), ("B only", "only_b", _COLOR_B),
                                 ("overlap", "overlap", _COLOR_OVERLAP)):
@@ -213,7 +222,9 @@ def main(argv: list[str] | None = None) -> dict:
             f" b = black level = 1/{1 / black:.0f}")
     legend = ("true geometry: orange = projector A's box (lit raster)  |  blue dashed = projector B's box  |"
               "  green = overlap (A and B both shine; blended)  |  white dashed = content rect")
-    view = np.vstack([view, caption(view.shape[1], text), overlay_panel(scene, view), caption(view.shape[1], legend)])
+    regions = region_masks(scene)
+    view = np.vstack([view, caption(view.shape[1], text), overlay_panel(scene, view, regions),
+                      caption(view.shape[1], legend)])
     path = out_dir / "view.png"
     cv2.imwrite(str(path), cv2.cvtColor(view, cv2.COLOR_RGB2BGR))
 
@@ -225,7 +236,7 @@ def main(argv: list[str] | None = None) -> dict:
         "setup_s": round(t1 - t0, 3),
         "render_s": round(t2 - t1, 3),
     }
-    levels = measure_levels(scene, electrons)
+    levels = measure_levels(scene, electrons, regions)
     white = white_electrons(scene)
     summary["levels"] = levels
     summary["levels_display_255"] = {

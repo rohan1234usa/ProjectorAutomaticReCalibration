@@ -60,6 +60,18 @@ def test_repo_detector_yaml_equals_defaults():
     assert DetectorConfig.from_yaml(REPO / "detector.yaml") == DetectorConfig()
 
 
+def test_claude_md_section_10_equals_defaults():
+    """The contract printed in CLAUDE.md section 10 must match the code, value for value."""
+    import re
+
+    import yaml
+
+    text = (REPO / "CLAUDE.md").read_text()
+    block = re.search(r"```yaml\n(.*?)```", text[text.index("## 10. Config"):], re.S).group(1)
+    assert DetectorConfig.from_dict(yaml.safe_load(block)) == DetectorConfig()
+    assert set(yaml.safe_load(block)) == set(SECTION_10)
+
+
 def test_yaml_round_trip(tmp_path):
     import yaml
 

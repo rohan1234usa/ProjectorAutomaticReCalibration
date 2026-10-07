@@ -22,11 +22,12 @@ Physics, in the order light goes through it:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
 
-from sim.planar import box_mm, jacobian_det, translation, warp_linear
+from sim.planar import box_mm, jacobian_det, raster_corners, translation, warp_linear
 from sim.screen import ScreenGrid
 
 
@@ -79,7 +80,12 @@ def project(light: np.ndarray, h_cal: np.ndarray, h_actual: np.ndarray, grid: Sc
     h, w = light.shape[:2]
     if not np.array_equal(h_actual, h_cal):
         light = light * area_ratio(h_cal, h_actual, (w, h))[..., None]
-    r0, r1, c0, c1 = grid.window(box_mm(h_actual, (w, h)))
+    # Bilinear reconstruction spreads light half a projector pixel past the box edge, so the
+    # window must reach that far for this projector's largest pixel (|det J| peaks at a corner).
+    u, v = raster_corners((w, h)).T
+    max_pitch_mm = float(np.sqrt(np.abs(jacobian_det(h_actual, u, v)).max()))
+    pad = math.ceil(0.5 * max_pitch_mm * grid.px_per_mm) + 2
+    r0, r1, c0, c1 = grid.window(box_mm(h_actual, (w, h)), pad_px=pad)
     if r1 <= r0 or c1 <= c0:
         return
     m = translation(-c0, -r0) @ grid.mm_to_grid @ h_actual

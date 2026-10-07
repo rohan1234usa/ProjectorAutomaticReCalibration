@@ -35,3 +35,6 @@ def test_bad_content_config_is_rejected():
         make_content({"type": "slides"}, (10, 10), np.random.default_rng(0))
     with pytest.raises(ValueError):
         make_content({"type": "flat", "colour": 1}, (10, 10), np.random.default_rng(0))
+    for frac in (-0.05, 0.5):
+        with pytest.raises(ValueError, match="border_frac"):
+            make_content({"type": "flat", "border_frac": frac}, (200, 100), np.random.default_rng(0))

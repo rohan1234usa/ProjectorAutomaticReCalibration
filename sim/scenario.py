@@ -70,18 +70,23 @@ def scene_from_dict(data: Mapping[str, Any], quality: str | None = None, default
         raise ValueError(f"scenario: missing keys {sorted(missing)}")
     screen_cfg = dict(data["screen"])
     _check_keys(screen_cfg, {"size_mm", "reflectance", "ambient", "surround"}, "screen")
+    if "size_mm" not in screen_cfg:
+        raise ValueError("screen: size_mm is required")
     screen = Screen(size_mm=_pair(screen_cfg.pop("size_mm"), float), **screen_cfg)
 
+    # Projectors are addressed by name everywhere (box_a, width_a_mm, "A only"), never by order.
+    if set(data["projectors"]) != {"a", "b"}:
+        raise ValueError(f"projectors: exactly two, named a and b; got {sorted(data['projectors'])}")
     projectors = {}
-    for name, cfg in dict(data["projectors"]).items():
+    for name in ("a", "b"):
+        cfg = dict(data["projectors"][name])
         _check_keys(cfg, _PROJECTOR_KEYS, f"projectors.{name}")
-        cfg = dict(cfg)
+        if "resolution" not in cfg:
+            raise ValueError(f"projectors.{name}: resolution is required")
         resolution = _pair(cfg.pop("resolution"), int)
         if "color_balance" in cfg:
             cfg["color_balance"] = tuple(float(c) for c in cfg["color_balance"])
         projectors[name] = Projector(name=name, resolution=resolution, **cfg)
-    if len(projectors) != 2:
-        raise ValueError("scenario: exactly two projectors are supported")
 
     corners, content_rect = _arrangement(dict(data["arrangement"]), screen, projectors)
     blend = dict(data.get("blend", {}))
@@ -123,20 +128,19 @@ def _arrangement(
     preset = cfg.pop("preset", None)
     if preset == "side_by_side":
         _check_keys(cfg, {"width_mm", "width_a_mm", "width_b_mm", "overlap_mm", "vertical_offset_mm"}, "arrangement")
-        a, b = projectors
         widths = [cfg.get(f"width_{n}_mm", cfg.get("width_mm")) for n in ("a", "b")]
         if None in widths or "overlap_mm" not in cfg:
             raise ValueError("arrangement side_by_side: needs width_mm (or width_a_mm and width_b_mm) and overlap_mm")
-        box_a, box_b, rect = side_by_side(
+        box_a, box_b, rect = side_by_side(  # A on the left, B on the right
             screen.size_mm,
-            projectors[a].resolution,
-            projectors[b].resolution,
+            projectors["a"].resolution,
+            projectors["b"].resolution,
             float(widths[0]),
             float(widths[1]),
             float(cfg["overlap_mm"]),
             float(cfg.get("vertical_offset_mm", 0.0)),
         )
-        return {a: box_a, b: box_b}, rect
+        return {"a": box_a, "b": box_b}, rect
     if preset == "explicit":
         _check_keys(cfg, {"corners_mm", "content_rect_mm"}, "arrangement")
         if "corners_mm" not in cfg or "content_rect_mm" not in cfg:

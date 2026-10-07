@@ -25,6 +25,19 @@ WIDTH_MM = 250.0  # image width -> 1.042 mm per pixel, like the demo scene
 SCREEN_MM = (600.0, 260.0)
 CAMERA_RES = (480, 208)
 
+# The same installation as a scenario mapping, for tests that go through the YAML path.
+TINY_SCENARIO = {
+    "name": "tiny",
+    "seed": 2,
+    "quality": "fast",
+    "screen": {"size_mm": list(SCREEN_MM), "reflectance": 0.9, "ambient": 0.0003},
+    "arrangement": {"preset": "side_by_side", "width_mm": WIDTH_MM, "overlap_mm": 60, "vertical_offset_mm": 0.3},
+    "projectors": {"a": {"resolution": list(RES)}, "b": {"resolution": list(RES)}},
+    "blend": {"shape": "cosine"},
+    "content": {"type": "slide", "border_frac": 0.1},
+    "camera": {"preset": "whole_screen", "resolution": list(CAMERA_RES)},
+}
+
 
 def make_setup(corners: dict[str, np.ndarray], content_rect, shape: str = "cosine", res=RES) -> CalibrationSetup:
     h = {n: homography_from_points(raster_corners(res), np.asarray(c, dtype=float)) for n, c in corners.items()}

@@ -405,6 +405,8 @@ keep a `fast` quality preset for tests. Items marked "Phase 2" are still to buil
   - **Default ambient: 0.02** of projector white, a dim lecture hall. Planning estimates:
     passive markers are undetectable in single frames at the dark-room 0.0003, and give
     ≈ 0.12 mm homography error at 0.02. The `dark_room` scenario covers the dark case.
+  - Optional screen gain and vignetting (Phase 2): a high-gain screen is brighter near its
+    hotspot.
 - **Projector** (×2):
   - resolution, homography px→mm (from an arrangement preset or explicit corners), gamma,
     brightness, black level (non-zero!), colour balance;
@@ -439,6 +441,8 @@ keep a `fast` quality preset for tests. Items marked "Phase 2" are still to buil
     aliasing;
   - pixel integration by supersampling, shot + read noise, locked exposure, pedestal,
     vignetting, optional gamma;
+  - optional in-camera sharpening (Phase 2), to reproduce that failure mode: its halos can
+    mimic double contours;
   - Phase 2: output 16-bit linear luminance. Rec. 709 weights are applied right after the
     projector light; RGB stays an option. This roughly halves render time and memory.
 - **Perturbation** (`perturb.py`):
@@ -455,6 +459,7 @@ keep a `fast` quality preset for tests. Items marked "Phase 2" are still to buil
     markers;
   - flicker: per-projector brightness modulation, with optional banding when exposure is
     not a multiple of the refresh period;
+  - in-camera sharpening left on by mistake;
   - black-level uplift outside the overlap, if the blending software compensates.
 - **Ground truth per frame** (`truth.py`), written to `metadata.jsonl`:
   - true relative homography `h_rel = H_actB·H_calB⁻¹·H_calA·H_actA⁻¹`;
@@ -516,7 +521,7 @@ Create these YAML scenarios; each exists to answer a specific question. Defaults
 | `aligned_slides` | FPR on static text-heavy decks (three text densities, 20 min). |
 | `held_slide` | One slide for 20 min: does the detector cope with zero content variety (echo pools starve; boundary and hotspots carry on)? |
 | `aligned_video` | FPR under motion, fast motion, cuts, dark scenes. |
-| `aligned_nuisances` | Camera bump, 15% lamp dimming, room-light step, occluder, flicker ⇒ still NO? |
+| `aligned_nuisances` | Camera bump, 15% lamp dimming, room-light step, occluder, flicker, in-camera sharpening ⇒ still NO? |
 | `shift_sweep` | Steps of 0.25, 0.5, 1, 2, 4, 8 px shift across and along the overlap edge; detection curve. |
 | `rotation_sweep` | Small rotations of B about its centre and about a far corner. |
 | `scale_keystone` | Zoom and tilt perturbations; does the 6→8 param escalation work? |

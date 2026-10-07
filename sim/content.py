@@ -122,6 +122,14 @@ _KINDS = {"flat", "black", "slide"}
 _KEYS = {"type", "value", "border_frac"}
 
 
+def border_px(cfg: Mapping[str, Any], size: tuple[int, int]) -> int:
+    """Width in content pixels of the black border on every side (``border_frac`` x height)."""
+    frac = float(cfg.get("border_frac", 0.0))
+    if not 0.0 <= frac < 0.5:
+        raise ValueError(f"content: border_frac must be in [0, 0.5), got {frac}")
+    return round(frac * size[1])
+
+
 def make_content(cfg: Mapping[str, Any], size: tuple[int, int], rng: np.random.Generator) -> np.ndarray:
     """Build content of `size` (width, height) from a scenario's ``content`` mapping.
 
@@ -132,7 +140,7 @@ def make_content(cfg: Mapping[str, Any], size: tuple[int, int], rng: np.random.G
     if unknown or cfg.get("type") not in _KINDS:
         raise ValueError(f"content: need type in {sorted(_KINDS)}; unknown keys {sorted(unknown)}")
     w, h = size
-    border = round(float(cfg.get("border_frac", 0.0)) * h)
+    border = border_px(cfg, size)
     inner = (w - 2 * border, h - 2 * border)
     if min(inner) < 1:
         raise ValueError(f"content: border_frac leaves no picture inside {size}")
