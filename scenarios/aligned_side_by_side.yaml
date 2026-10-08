@@ -1,0 +1,42 @@
+# Phase 1 render check.
+# Question: with two identical projectors side by side and perfectly aligned, does the combined
+# image look seamless, with each projector's faint black-level raster visible around the content?
+name: aligned_side_by_side
+seed: 1
+quality: standard
+
+screen:
+  size_mm: [4000, 1500]
+  reflectance: 0.9
+  ambient: 0.0003          # room light on the screen, in units of one projector's full white (dark room)
+  surround: 0.0001         # wall around the screen, as the camera sees it
+
+arrangement:
+  preset: side_by_side
+  width_mm: 2000           # each projector's image width -> 1.04 mm per pixel
+  overlap_mm: 410          # 393.6 projector pixels: grids deliberately not pixel-aligned
+  vertical_offset_mm: 0.3  # B sits 0.3 mm lower than A, as in any real installation
+
+projectors:
+  a: {resolution: [1920, 1080], gamma: 2.2, brightness: 1.0, black_level: 0.0006667, color_balance: [1, 1, 1]}
+  b: {resolution: [1920, 1080], gamma: 2.2, brightness: 1.0, black_level: 0.0006667, color_balance: [1, 1, 1]}
+
+blend:
+  shape: cosine
+
+content:
+  type: slide
+  border_frac: 0.05        # black border inside the content rect: the black-level raster shows around the picture
+
+camera:
+  preset: whole_screen
+  resolution: [3840, 1600]
+  margin: 0.05
+  keystone: 0.02
+  psf_sigma_px: 0.8
+  exposure: 0.75           # radiance 1.0 (one projector's white on a perfect reflector) fills 75% of the well
+  full_well_e: 20000
+  read_noise_e: 3.0
+  pedestal_dn: 256
+  vignetting: 0.15
+  gamma: 1.0

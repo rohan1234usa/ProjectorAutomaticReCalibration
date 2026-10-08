@@ -2,18 +2,31 @@
 
 This repository builds a camera-based script that answers one question about two
 edge-blended projectors forming a single combined image: **have they drifted out of
-alignment since the last calibration?** Output is `YES` (misaligned, recalibrate) or `NO`,
-plus the estimated offset and a confidence.
+alignment since the last calibration?** Output is `YES` (misaligned, press recalibrate) or
+`NO`, plus the estimated offset and a confidence. Today a professor checks this by eye in a
+lecture hall and presses the calibration software's recalibrate button; the script replaces
+that visual check.
+
+The design comes from the original pseudocode, `docs/research/pseudocode.md` (Oct 1, 2026).
+This brief keeps that document's methods for checking the overlap, its frame routing,
+decision rule, edge cases and stress tests, and generalizes it in three ways:
+- the two projectors may sit in any overlapping arrangement, at angles to each other;
+- the camera sees the whole picture;
+- boundary analysis of each projector's rectangle is the primary tool.
 
 No hardware is available yet. Everything is developed and proven against a **simulator**
 that renders the projectors, the screen and the camera, and generates **ground-truth
 datasets** (some runs aligned, some misaligned by known amounts). The detector must never
-read simulator internals; it only sees camera frames and the calibration software's
-blending setup, exactly as it would on real hardware.
+read simulator internals. It only sees what it would see on real hardware:
+- camera frames;
+- the calibration software's blending setup;
+- in reference mode, the video frames sent to the projectors.
 
 Read this whole file before writing code. If a simulation result contradicts a design
 choice below, do not silently redesign: write the finding with numbers to
 `docs/findings.md` and raise it.
+
+**Status:** Phase 1 (scaffold + simulator core) is done; Phase 2 is next (section 8).
 
 ---
 
@@ -25,32 +38,64 @@ choice below, do not silently redesign: write the finding with numbers to
 2. **Any arrangement that overlaps is possible.** Side by side, one above the other, one
    rotated relative to the other, meeting at a corner, different sizes, or one mostly on
    top of the other. Never assume a vertical band. The overlap is *measured* as the
-   intersection of the two projector footprints, and every other region (core tiles,
-   control areas, edge pieces) is derived from it.
+   intersection of the two projector footprints. Every other region (core tiles, control
+   tiles, hotspot blocks, edge pieces) is derived from it.
 3. **The state immediately after calibration is ground truth.** Everything captured then
-   (footprints, profiles, reference frames) is what later checks compare against. A new
-   calibration replaces the baseline.
+   (footprints, profiles, pools) is what later checks compare against. A new calibration
+   replaces the baseline and resets the answer to NO.
 4. **Boundary analysis is the primary tool.** Each projector's footprint (a convex
    quadrilateral on the screen, the "box") is measured after calibration and re-measured
-   every `ADJUSTABLE_INTERVAL_IN_SECONDS`. The comparison of current boxes to calibrated
-   boxes is content-independent and is what drives the alignment likelihood.
-5. **The overlap artifact check is secondary and triggered.** When boundary analysis
-   reports an offset above threshold (or on a slow timed safety check), the detector
-   inspects the overlap for the four visible symptoms: double contours, brightness
-   hotspots, color fringing, offset borders.
-6. **SSIM is confirmation only, never primary.** SSIM against the post-calibration image
-   changes whenever the *content* changes, even with the projectors perfectly aligned. It
-   is used only when the current frame is recognized as the same content as a stored
-   post-calibration reference frame (perceptual-hash match).
-7. **Camera is fixed and locked.** Exposure, gain, white balance and focus are locked;
-   in-camera sharpening and denoise are off. Printed fiducial markers on the screen frame
-   give the camera→screen homography. Frames are kept in RGB and converted to linear light.
+   every `ADJUSTABLE_INTERVAL_IN_SECONDS`, from the parts of its outline visible in the
+   combined image: its outer edges against the unlit screen, and its inner edges in dark
+   frames. The comparison of current boxes to calibrated boxes is content-independent and
+   is what drives the alignment likelihood.
+5. **The overlap check is secondary and triggered.** It runs when boundary analysis reports
+   an offset above `TRIGGER_MM`, or on a slow timed safety check. It inspects the overlap
+   for three signs of misalignment, using the pseudocode's methods:
+   - **double contours**: a cepstral echo in core tiles that is missing from the control
+     tiles beside the overlap;
+   - **brightness hotspots**: the overlap is brighter or darker than at calibration. This
+     is fitted as a shift across the overlap edge, kept separate from lamp gain and trend;
+   - **offset borders**: where a content border crosses the overlap, A's and B's copies of
+     it no longer coincide.
+
+   Color fringing is not checked.
+6. **SSIM is not used.** SSIM against the post-calibration image changes whenever the
+   *content* changes, even with the projectors perfectly aligned. Its intended role,
+   confirmation on recurring content, is taken by reference mode (decision 10).
+7. **Camera is fixed and locked.**
+   - Exposure, gain, white balance and focus are locked. Exposure is a multiple of the
+     projector refresh period, so there is no flicker banding.
+   - In-camera sharpening and denoise are off.
+   - Frames are 16-bit linear **luminance** (mono).
+   - Printed passive ArUco markers on the screen bezel give the camera→screen homography.
+     They sit at the four corners and above and below the overlap. Being passive, they need
+     room light (about 0.02 of projector white or more) or a little light of their own.
 8. **Units are millimeters on the screen.** Projector pixels can differ in size between
    the two projectors, so offsets are measured in mm and reported also in "coarser
    projector pixels" for readability.
 9. **YES means a human would notice.** The threshold starts from the viewing geometry
    (≈1 arcminute at the closest seat, i.e. `D · tan(1′)` mm) and is later learned from
    manual recalibrate-button presses. In simulation it is a swept parameter.
+10. **Two input modes.**
+    - *Blind mode* uses only the camera. It is the default and is built first.
+    - *Reference mode* also reads the video frame being sent to the projectors (a screen
+      capture or an HDMI splitter). It measures where each projector places the content by
+      multi-frame Wiener deconvolution. It has no resolution floor, is harder to fool, and
+      is built right after blind mode.
+11. **Every frame type is useful, and "can't tell" beats a guess.** Frames are routed by
+    kind:
+    - motion, cuts and clipped frames are skipped;
+    - textured regions feed the echo and the edge fits;
+    - flat regions feed the hotspot fit;
+    - dark regions outline each projector's raster through its black level.
+
+    A measurement that cannot see returns `None` (or an upper bound), never 0. `None` holds
+    the previous answer.
+12. **Self-referencing.** Measurements compare projector A to projector B. Boxes are fitted
+    jointly with a shared camera-motion term, so a bumped camera cannot fake a YES.
+    Nuisances must never produce YES: camera bump, lamp dimming, room light, people walking
+    past, flicker.
 
 ---
 
@@ -59,190 +104,385 @@ choice below, do not silently redesign: write the finding with numbers to
 | Term | Meaning |
 | --- | --- |
 | **box** | One projector's lit footprint on the screen: a convex quadrilateral, 4 corners in mm. `box_a`, `box_b`. |
-| **overlap** | `intersect(box_a, box_b)`: a convex polygon. Any shape. |
-| **core** | Points of the overlap where both blend weights are ≥ `CORE_MIN_WEIGHT`. Tiled with `TILE_MM` squares. |
-| **control areas** | Regions just outside the overlap lit by only one projector: `only_a`, `only_b`. Used to tell content patterns from real ghosting. |
-| **edge pieces** | The overlap's boundary cut into pieces of `EDGE_PIECE_MM`; each piece knows which projector owns it and its outward normal. |
+| **overlap** | `intersect(box_a, box_b)`: a convex polygon, any shape. The pseudocode's "band" is the side-by-side special case. |
+| **core** | Points of the overlap where both blend weights are ≥ `CORE_MIN_WEIGHT`. Tiled with `TILE_MM` squares (core tiles). |
+| **control tiles** | For each core tile: a tile just outside the overlap in the region lit by A only (`ctrl_a`), and one in the region lit by B only (`ctrl_b`). Found by walking along the blend gradient. They show the same kind of content with no echo. A pattern found inside and outside the overlap is content; one found only inside is misalignment. |
+| **control areas** | `only_a`, `only_b`: the regions lit by one projector only. |
+| **edge pieces** | Box outlines cut into pieces of `EDGE_PIECE_MM`. Each piece knows which projector owns it, its outward normal, and how it can be seen (content border, black level, blend ramp). |
 | **outer boundary** | The combined image's outline. It is made of segments each owned by one projector. Always visible via that projector's raster edge (black level against the unlit screen) and, when content there isn't black, via the content border. |
-| **inner edges** | Edges of one box that lie inside the other box. Faded to zero by blending in bright content; visible only via black level in dark content. |
-| **blend map** | Each projector's 2-D fade weight over the screen, `a(x) + b(x) = 1` in linear light inside the overlap. From the blending setup, else estimated from distance to each projector's edge. |
-| **baseline** | Everything captured right after calibration (section 4.5). |
-| **symptom** | One of the four overlap artifacts: double contours, hotspots, color fringing, offset borders. |
-| **offset** | Largest displacement anywhere in the overlap between current and calibrated state, in mm. |
+| **inner edges** | Edges of one box that lie inside the other box (and inside the content). Faded to zero by blending in bright content; visible only via black level in dark content. |
+| **blend map** | Each projector's 2-D fade weight over the screen, `a(x) + b(x) = 1` in linear light inside the overlap. From the blending setup, else estimated from distance to each projector's inner edges. |
+| **blending setup** | What the calibration software knows and the detector may read: each projector's calibrated homography and resolution, the content rect, the blend shape (hence the blend maps), and the marker layout. |
+| **content rect** | The rectangle of screen the calibration software fills with content. Projector pixels outside it show black. |
+| **echo** | The second copy of the content in the overlap when misaligned: `O ≈ a·S(x − d_A) + b·S(x − d_B)`. The **cepstrum** `|F⁻¹{log|F{O}|}|` turns it into a peak at the offset `d = d_B − d_A`. |
+| **hotspot map** | Per-block brightness of the overlap relative to the single-projector flanks, compared with its value at calibration. This is the pseudocode's seam profile, in 2-D. |
+| **kernel** | Reference mode: the Wiener-deconvolution kernel between the source frame and the camera image of a tile. It peaks where the projector puts the content. |
+| **source frame** | Reference mode: the video frame sent to the projectors, with a timestamp. The camera lags it by a few frames. |
+| **pools** | Per-tile and per-block accumulators filled frame by frame and evaluated on demand: log spectra, cross spectra, brightness ratios, edge profiles. |
+| **frame kind** | `skip` (motion, cut, clipped, camera moved), `dark`, `flat` or `textured`. Decided per frame and per region. |
+| **floor / unresolved** | The floor is the smallest offset a method can resolve. An echo detected below its floor is `unresolved` (present, size unknown). No detection returns `None` with `upper_bound = floor`. |
+| **field** | The smooth motion model fitted to local measurements: shift (2 params), shift + rotation (3), affine (6), homography (8). |
 | **relative homography** | 3×3 matrix mapping box A's frame to box B's; identity when aligned. 6 free params (shift, rotation, scale, shear) fitted first; 2 keystone params only if a pattern remains. |
+| **baseline** | Everything captured right after calibration (section 4.5). |
+| **symptom** | One of the three overlap signs: double contours, hotspots, offset borders. |
+| **offset** | Largest displacement anywhere in the calibrated overlap between the current and the calibrated state, in mm. |
+| **bezel** | The frame around the screen surface; it carries the markers. |
 
 ---
 
 ## 3. Repository layout
 
+The tree's root is this repository's root; commands run from here. `[done]` marks what
+exists.
+
 ```
-projector_align/
-  sim/                 # simulator: never imported by detector/
-    screen.py          # screen size (mm), fiducial positions
-    projector.py       # projector: resolution, homography px→mm, blend map, gamma, black level, color balance
-    content.py         # content sources: slides, text, photos, video sequences, flat, dark, letterboxed
-    camera.py          # camera: homography mm→px, PSF blur, noise, gamma, vignetting, optional CA / sharpening
-    perturb.py         # misalignment injection: shift, rotation, scale, keystone; schedules
-    nuisance.py        # camera bump, lamp dimming, room light, occluder, flicker
-    scenario.py        # declarative scenario (YAML) → frame generator with per-frame ground truth
-    dataset.py         # write/read datasets: frames (PNG, 16-bit linear) + metadata.jsonl
-  detector/            # the real algorithm: sees only camera frames + blending setup
-    config.py          # all tunables as a dataclass, loadable from YAML
-    rectify.py         # fiducials → homography → rectified linear RGB canvas (mm grid)
-    geometry.py        # Boxes, OverlapGeometry (overlap, core tiles, control areas, edge pieces, border crossings)
-    boundary.py        # PRIMARY: measure boxes at calibration; per-interval re-measure; relative homography fit
-    artifacts.py       # SECONDARY: double contours, hotspots, color fringing, offset borders
-    ssim_matched.py    # CONFIRMATION: perceptual-hash reference library, SSIM terms on matched frames
-    baseline.py        # capture/save/load the post-calibration baseline
-    fusion.py          # combine boundary + artifact evidence into one offset estimate + confidence
-    decision.py        # threshold, hysteresis, K-of-N voting, YES/NO + warnings
-    runner.py          # the loop: baseline → every ADJUSTABLE_INTERVAL_IN_SECONDS → check → decide
-  eval/
-    metrics.py         # detection rate vs offset, FPR, latency, boundary availability, per-type confusion
-    sweep.py           # run detector over a dataset with threshold sweeps
-    report.py          # CSV + PNG plots + per-scenario diagnostic images
-  scenarios/           # YAML scenario files (one per test idea; adding a test = adding a file)
-  scripts/
-    make_dataset.py    # python -m scripts.make_dataset scenarios/xxx.yaml out/xxx
-    run_detector.py    # python -m scripts.run_detector out/xxx --config detector.yaml
-    evaluate.py        # python -m scripts.evaluate out/xxx/results.jsonl
-    visualize.py       # quick-look overlays for a frame: boxes, overlap, tiles, diff/SSIM maps
-  tests/               # pytest; unit + property + regression (fixed seeds)
-  docs/
-    findings.md        # dated findings with numbers
-    research/          # exported research doc (Markdown) for reference
 CLAUDE.md
-pyproject.toml
+README.md               # short public overview and quick start                     [done]
+pyproject.toml          # uv project, no package build: `uv sync`, `uv run pytest`   [done]
+detector.yaml           # section 10 defaults                                       [done]
+sim/                    # simulator: never imported by detector/; imports nothing from detector/
+  planar.py             # homographies, convex polygons, the one image warp (sim's own geometry)  [done]
+  screen.py             # screen size, reflectance, room light; bezel + reflectance map (Phase 2) [done]
+  fiducials.py          # ArUco marker layout and rendering on the bezel
+  projector.py          # resolution, homography px→mm, gamma, black level, colour balance, light [done]
+  calibration.py        # the blending setup: H_cal, content rect, blend maps, framebuffers      [done]
+  arrangements.py       # presets: side by side, stacked, rotated, corner, different sizes, large overlap
+  content.py            # still images: flat, black, text slides                                 [done]
+  textures.py           # photo-like textures, dark film, stripes, letterbox, blank-overlap content
+  video.py              # synthetic video: moving objects, pans, cuts
+  sequence.py           # content over time: decks, held slide, video, flat
+  camera.py             # homography mm→px, PSF, pixel integration, vignetting, noise, 16-bit     [done]
+  perturb.py            # misalignment injection on h_actual: shift, rotation, scale, keystone; schedules
+  nuisance.py           # camera bump, lamp dimming, room light, occluder, flicker, black-level uplift
+  truth.py              # per-frame ground truth: relative homography, offset_mm/px, tags
+  render.py             # the render chain: content → projector light → screen → camera          [done]
+  frames.py             # FrameSource: on-demand deterministic frames with render caches
+  scenario.py           # declarative scenario (YAML) → objects                                  [done: static subset]
+  dataset.py            # write/read datasets: metadata.jsonl, setup.json, optional 16-bit PNG frames
+detector/               # the real algorithm: camera frames + blending setup (+ source frames) only
+  inputs.py             # CameraFrame, BlendingSetup, SourceFrame: the detector's input contract
+  config.py             # all tunables as a dataclass, loadable from YAML                         [done]
+  rectify.py            # markers → homography → rectified linear canvas (mm grid); camera motion
+  polygon.py            # convex polygon helpers (the detector's own)
+  blending.py           # blend maps from the blending setup
+  geometry.py           # OverlapGeometry: overlap, core + control tiles, hotspot blocks, edge pieces, border crossings
+  classify.py           # frame routing: skip / dark / flat / textured
+  pools.py              # EchoPool, SeamPool, edge accumulators
+  edges.py              # sub-pixel edge-piece measurement (content border, black level, blend ramp)
+  field.py              # smooth motion-field fits (2/3/6/8 params), RANSAC with sign handling
+  boundary.py           # PRIMARY: boxes at calibration; per-interval re-measure; joint A/B fit
+  echo.py               # SECONDARY: double contours (cepstrum minus control tiles)
+  seam.py               # SECONDARY: hotspot-map fit (shift across edges, lamp gain, trend)
+  borders.py            # SECONDARY: offset borders
+  artifacts.py          # SECONDARY orchestrator: pools → symptoms → offset, agreeing count
+  source.py             # reference mode: source ring buffer, lag matching
+  kernel.py             # reference mode: Wiener kernels, kernel offset
+  baseline.py           # capture/save/load the post-calibration baseline
+  fusion.py             # combine boundary + overlap evidence into one offset estimate + confidence
+  decision.py           # threshold, hysteresis, K-of-N voting, YES/NO + warnings
+  runner.py             # the loop: baseline → every interval → check → decide → JSONL
+  results.py            # result dataclasses
+eval/
+  feed.py               # the only module importing both sim/ and detector/: FrameSource → detector inputs
+  metrics.py            # detection rate vs offset, FPR, latency, availability, per-type confusion
+  sweep.py              # run the detector over datasets with threshold sweeps
+  report.py             # CSV + PNG plots + per-scenario diagnostic images + report.md
+scenarios/              # YAML scenario files (one per test idea; adding a test = adding a file)
+scripts/
+  make_dataset.py       # python -m scripts.make_dataset scenarios/xxx.yaml out/xxx [--frames all|sample|none]
+  run_detector.py       # python -m scripts.run_detector out/xxx --config detector.yaml
+  evaluate.py           # python -m scripts.evaluate out/xxx/results.jsonl
+  visualize.py          # quick look at one frame, with the true geometry drawn on top            [done]
+tests/                  # pytest; unit + property + regression (fixed seeds)                     [done: Phase 1]
+docs/
+  findings.md           # dated findings with numbers
+  research/pseudocode.md  # the original pseudocode this brief generalizes
 ```
 
-Hard rule: `detector/` imports nothing from `sim/`. The harness (`eval/`, `scripts/`) is the
-only place both meet.
+Hard rules:
+- `detector/` imports nothing from `sim/`, and `sim/` imports nothing from `detector/`.
+  `tests/test_imports.py` enforces both.
+- The harness (`eval/`, `scripts/`) is the only place the two meet. `eval/feed.py` is the
+  only module that turns simulator output into detector input.
+- The detector never sees ground truth.
 
 ---
 
 ## 4. The detector, in order of trust
 
 ### 4.1 Rectification (`rectify.py`)
-- Detect the 4+ fiducials, solve camera→screen homography (mm grid, `CANVAS_PX_PER_MM`).
-- Convert to linear light (undo camera gamma). Keep R, G, B.
-- Detect fiducial motion between checks; if the camera moved, re-solve and continue
-  (camera motion must never produce a YES).
+- Detect the bezel markers (≥ 4 must be visible).
+- Solve the camera→screen homography from marker **centres**, onto a mm grid at
+  `CANVAS_PX_PER_MM`. Detected marker corners carry an inward bias of about 0.9 px at this
+  marker size; centres cancel it.
+- Frames are already linear (camera gamma 1). Subtract the pedestal and scale to relative
+  radiance; pedestal and gain are known camera settings and part of the detector's inputs.
+- Track marker motion between frames. If the markers move more than `FIDUCIAL_MOVE_PX`:
+  re-solve, raise a `camera_moved` warning and reset the pools. Camera motion must never
+  produce a YES.
 
-### 4.2 Boundary analysis — PRIMARY (`boundary.py`)
+### 4.2 Boundary analysis — PRIMARY (`boundary.py`, `edges.py`, `field.py`)
 **At calibration** (`measure_boxes_at_start`):
-- Prior: the boxes the blending setup reports (the calibration software knows where it
-  put each frame). Treat as a starting guess, not truth.
-- Evidence, from the combined image only:
-  1. **Outer boundary segments.** Fit straight lines to the combined image's outline.
-     Each segment belongs to one projector. Use both the content border (strong, when the
-     content there isn't black) and the raster edge via black level (faint, always
-     present — needs frame averaging).
+- Prior: the boxes the blending setup reports (the calibration software knows where it put
+  each frame). Treat them as a starting guess, not truth.
+- Evidence comes from the combined image only, as edge pieces:
+  1. **Outer boundary segments.** Each belongs to one projector. Use both the content
+     border (strong, when the content there isn't black) and the raster edge via black
+     level (faint but always present; needs averaging over frames and along the edge).
   2. **Inner edges from dark frames.** When the overlap is dark, each projector's black
      level outlines its full frame, including edges hidden under the other projector.
-     Average many dark frames.
-  3. **Blend-ramp profiles.** In lit flat frames the fade across each overlap edge locates
+  3. **Blend-ramp profiles.** In lit flat frames, the fade across each inner edge locates
      the owner's edge.
-- Fit two convex quadrilaterals to all evidence (RANSAC lines → corners by intersection).
-  Store corner uncertainty from the line-fit residuals.
-- Keep refining during a trusted window (`TRUSTED_WINDOW_S`) after calibration as more
-  dark/lit frames arrive.
+  4. **Border crossings.** Where a content border crosses the overlap, each projector's
+     copy of it locates that projector.
+- Fit two convex quadrilaterals to all the evidence (robust line fits, corners by
+  intersection). Store corner uncertainty from the fit residuals.
+- Keep refining during the trusted window (`TRUSTED_WINDOW_S`) after calibration, as more
+  dark and lit frames arrive.
 
 **Every `ADJUSTABLE_INTERVAL_IN_SECONDS`** (`boundary_check`):
-- Re-measure whichever edges are currently visible (outer segments nearly always; inner
-  edges only in dark frames; border crossings when content there is lit).
-- Each piece of evidence constrains motion only *across* its own edge. Require evidence at
-  ≥2 distinct angles before fitting; otherwise return `None` ("boundary not visible this
-  interval"), never a guess. Arrangements with rotated edges make this easier.
+- Re-measure whichever pieces are visible now:
+  - each piece constrains motion only *across* its own edge, so it gives one observation
+    n̂·u, with σ from its edge-fit covariance;
+  - pieces below `MIN_EDGE_SNR` are not used.
+- Require evidence at ≥ 2 distinct angles per box before fitting. Otherwise return `None`
+  ("boundary not visible this interval"), never a guess.
+- Fit A and B **jointly**, with a shared camera-motion term (shift, optionally rotation),
+  by weighted least squares with robust (Huber) weights. This generalizes the pseudocode's
+  "(ΔB − ΔA)": residual homography error and camera bumps cancel, and only relative motion
+  remains.
 - Fit the relative homography B-vs-A against the calibrated boxes: 6 params first, 8 only
-  if residuals show a pattern. Report `offset_mm` = max corner displacement of the overlap
-  polygon, plus confidence from residuals and corner uncertainty.
-- Log a **boundary availability** flag every interval; the evaluation harness measures
-  how often the primary tool could answer, per content type.
+  if the residuals show a pattern.
+- Report `offset_mm` = the largest displacement over the calibrated overlap polygon, plus a
+  confidence from the residuals and corner uncertainty.
+- Precision budget (a planning estimate, to confirm in Phase 4):
+  - a black-level edge piece of 80 mm localizes to ≈ 0.11 mm in one frame and ≈ 0.02 mm
+    over 30 frames;
+  - a content-border piece localizes to ≈ 0.004 mm;
+  - the whole-screen camera, at ≈ 0.87 camera px per mm, resolves corners to ≲ 0.05 mm per
+    interval, ten times finer than the 0.5 px target.
+- Log a **boundary availability** flag every interval. The evaluation harness measures how
+  often the primary tool could answer, per content type.
 
-### 4.3 Overlap artifact check — SECONDARY, triggered (`artifacts.py`)
-Runs when `boundary_check` reports `offset_mm > TRIGGER_MM` (default = 0.5 × threshold),
-or on the timed safety check every `SAFETY_CHECK_S` regardless. Pools `POOL_FRAMES` usable
-frames (skip motion/cut frames, clipped frames), then evaluates:
+### 4.3 Overlap check — SECONDARY, triggered (`artifacts.py`, `echo.py`, `seam.py`, `borders.py`)
+Runs when `boundary_check` reports `offset_mm > TRIGGER_MM` (default 0.5 × tolerance), or on
+the timed safety check every `SAFETY_CHECK_S` regardless. These are the pseudocode's
+methods, generalized from a band to any overlap.
 
-1. **Double contours.** Cepstral echo peak in the core tiles, minus the same statistic in
-   the nearest control areas (content patterns appear in both; a real ghost only inside).
-   Returns offset vector per tile; tiles must agree on one smooth 6-param model.
-2. **Brightness hotspots.** 2-D block-mean brightness of the overlap, normalized per frame,
-   vs the baseline map. Shape classifies cause: band along one overlap edge = shift across
-   that edge; gradient along the overlap = rotation; one projector's whole side = lamp
-   (warning, not misalignment).
-3. **Color fringing.** Echo offset per channel (R, G, B) minus the lens's own per-channel
-   offset measured at calibration. Same offset in all channels = projectors moved;
-   channel spread = convergence fault (warning).
-4. **Offset borders.** Where the combined image's border runs through the overlap, the
-   step between A's and B's border position vs the calibrated step. Absent in arrangements
-   where no border crosses the overlap.
+**Routing and pools** (`classify.py`, `pools.py`)
+- Frames are sampled every `SAMPLE_EVERY_S`. A frame is skipped when:
+  - the mean absolute difference from the previous sample exceeds `MOTION_LEVEL` (motion or
+    a cut; the camera may have blended two video frames, which looks like a ghost);
+  - more than `MAX_CLIPPED` of its pixels saturate;
+  - the markers moved.
+- Each region (tile, block, piece) is then `dark` (mean below `DARK_LEVEL` × white),
+  `textured` (edge density above `MIN_TILE_EDGES`) or `flat`.
+- In blind mode a frame is kept only if it differs from the last kept one (NCC below
+  `VARIETY_MAX_NCC`): the echo needs varied content.
+- Pools fill continuously, bounded to `POOL_FRAMES`, and are evaluated when the check runs.
+  A tile needs `MIN_TILE_FRAMES` textured frames; a block needs `MIN_SEAM_FRAMES` flat (or
+  dark) frames.
 
-Each symptom returns `offset_mm` or `None` (content can't show it). `agreeing` = number of
-symptoms independently above threshold.
+**1. Double contours** (`echo.py`)
+- Per core tile, pool the log magnitude spectrum of the tile after a high-pass and a Hann
+  window; likewise for its control tiles. The high-pass must be *linear*, so the two-copy
+  model stays intact.
+- Cepstrum = |IFFT(mean log spectrum)|, then a robust z-score (median, 1.4826·MAD).
+- `diff = z(core) − mean z(controls)`. Content patterns appear in both and cancel; the echo
+  appears only in the core.
+- Zero a disk around the origin, of radius equal to the tile's floor. Take the maximum and
+  refine it sub-pixel.
+- Accept the peak only if it is above `MIN_PEAK_SNR` and above `NULL_FACTOR` × the
+  control-vs-control null, max|z(ctrl_a) − z(ctrl_b)|.
+- Tiles are cut on the **camera grid**, not the rectified canvas: resampling locks cepstral
+  peaks to multiples of the camera pitch. Peaks are converted to mm with the camera
+  homography's local Jacobian.
+- **Floor** = max(`MIN_OFFSET_MM`, `ECHO_FLOOR_CAMERA_PX` / local camera px per mm). That is
+  ≈ 2.9 mm for the whole-screen camera and ≈ 1.4 mm zoomed (planning estimates).
+  - A peak below the floor is `unresolved`.
+  - No peak returns `None` with `upper_bound = floor`. Never 0: that would veto a real
+    1.7–3 mm offset.
+- The echo's sign is ambiguous (+d or −d). Tiles must agree on one smooth field:
+  - fitted by `field.py` with RANSAC over sign choices, inlier distance `INLIER_MM`;
+  - an inlier fraction of at least `LINE_INLIER_FRAC` is required;
+  - the global sign is fixed by the hotspot fit or the boundary estimate;
+  - tiles that disagree mean content, not drift: return `None`.
+- Control tiles are found by walking along the blend gradient, from the tile centre to
+  `CTRL_MARGIN_MM` beyond the opposite inner edge. If one side is missing, one control is
+  used. If both are missing (one box inside the other), the echo is off.
 
-### 4.4 Matched-frame SSIM — CONFIRMATION only (`ssim_matched.py`)
-- During the trusted window after calibration, store perceptual hashes + frames of what
-  was on screen (`ReferenceLibrary`).
-- When a current frame hashes within `HASH_MATCH_BITS` of a stored one, compute SSIM
-  *terms separately* (luminance, contrast, structure) over the overlap after removing a
-  global gain/offset. Structure drop ⇒ geometric; luminance drop with structure intact ⇒
-  intensity. Estimate shift from the difference image via the gradient (optical-flow
-  style) method.
-- Never run SSIM on unmatched content. Never let it alone produce a YES.
+**2. Brightness hotspots** (`seam.py`)
+- Per block of the overlap (`TILE_MM`): the ratio of its mean to the mean of flat flank
+  blocks just outside the overlap, pooled over flat frames. Blocks must pass a flatness
+  gate (`FLAT_MAX_DEV`). The ratio is compared with its baseline value.
+- Model: Δr(x) = −∇b(x)·u(x) + (g − 1)·b(x) + trend(x). Shifting B moves its ramp, so the
+  overlap dims or brightens; a dimmer lamp (gain g) tilts it instead.
+- Fit u with `field.py` from these observations, plus g and the trend. Each observation is
+  1-D: it sees only motion across the overlap edge.
+- Sensitivity (planning estimate): 0.40% brightness per projector pixel of shift, for the
+  demo's cosine ramp over 394 px. The pseudocode's example: 2 px in a 384 px linear blend
+  is about 0.5%. Block noise is ≈ 0.03% per flat frame.
+- |g − 1| > `LAMP_WARN` → lamp warning, not misalignment.
+- The sign of the brightness change also fixes the echo's sign.
+- In dark frames the same blocks see each projector's black-level outline. Those
+  inner-edge positions go to the boundary layer (4.2), not here.
+
+**3. Offset borders** (`borders.py`)
+- Where the combined image's content border runs through the overlap: the step between
+  A's and B's border position, against the calibrated step.
+- `None` in arrangements or content where no border crosses the overlap.
+
+Each symptom returns `offset_mm`, `None`, or `unresolved` with a floor.
+`artifacts.offset_mm` is the max over symptoms (the pseudocode's "either can raise the
+alarm"). `agreeing` is the number of symptoms independently above `TOLERANCE_MM`.
+
+### 4.4 Reference mode (`source.py`, `kernel.py`)
+- Enabled when the source feed is available (`REFERENCE_MODE`: auto, on or off).
+- Keep the last `SOURCE_RING` source frames, with timestamps. The camera lags the video
+  output by a few frames, so:
+  - map each candidate to the camera grid through the blending setup (content → mm →
+    camera, in linear light);
+  - pick the one with the best NCC on downsampled images;
+  - reject matches below `MATCH_MIN_NCC` (e.g. a cut straddling the exposure).
+- Per core tile and control tile, pool the cross spectrum Σ O·conj(S) and the power
+  Σ|S|². Wiener kernel: k = IFFT(Σ O·conj(S) / (Σ|S|² + `WIENER_LAMBDA` · mean power)).
+- `ctrl_a`'s kernel shows where projector A alone puts the content; `ctrl_b`'s shows where
+  B does. Offset = centroid(k_b) − centroid(k_a), so camera motion cancels.
+- The core tile's kernel must be consistent with a·u_A + b·u_B. It splits into two blobs
+  only for large offsets.
+- There is no resolution floor (planning estimate: within ≈ 0.1 mm for 0.5–4 mm offsets at
+  whole-screen sampling). In reference mode, double contours become a sub-pixel symptom.
+  Repetitive content cannot fool it.
 
 ### 4.5 Baseline (`baseline.py`)
-Captured after every calibration: homography, `box_a`, `box_b`, `OverlapGeometry`,
-residual relative homography (≈ identity), edge-profile pools (lit and dark), hotspot map,
-per-channel lens offset, border steps, reference library, noise floor (SSIM/PSNR between
-two independent captures of the same frame), timestamp.
+Captured after every calibration and refined during `TRUSTED_WINDOW_S`:
+- camera homography and marker centres;
+- `box_a`, `box_b`, with corner covariance;
+- `OverlapGeometry` (tiles, controls, blocks, pieces) and the blend maps;
+- the residual relative field (≈ identity) and per-tile residual offsets;
+- per-piece edge positions (lit and dark), with counts;
+- per-block hotspot ratios, with counts;
+- border steps;
+- lamp gain ratio and white level;
+- noise model (variance vs mean);
+- reference-mode kernel offsets;
+- timestamp and config hash.
 
 ### 4.6 Fusion and decision (`fusion.py`, `decision.py`)
-- Primary estimate = boundary `offset_mm`. If artifacts ran: agree within `AGREE_MM` ⇒
-  take the max and raise confidence; artifacts say more than boundary with ≥2 symptoms
-  agreeing ⇒ take artifacts; boundary says more than artifacts ⇒ suspect edge fit or
-  camera, hold and re-check next interval.
-- Decision: `offset_mm > TOLERANCE_MM` votes YES; YES after `YES_VOTES = (3, 4)`; back to
-  NO only below `CLEAR_RATIO × TOLERANCE_MM`. `None` ⇒ hold previous answer.
-- Output per interval: `answer`, `offset_mm`, `offset_px`, `confidence`, `boundary_available`,
-  `symptoms`, `warnings` (lamp, convergence, camera-moved), all logged as JSONL.
+- Primary estimate = boundary `offset_mm`. If the overlap check ran:
+  - layers agree within `AGREE_MM` ⇒ take the max and raise confidence;
+  - the overlap check says more than the boundary, with ≥ 2 symptoms agreeing ⇒ take the
+    overlap check;
+  - the boundary says more than the overlap check ⇒ suspect the edge fit or the camera,
+    hold and re-check next interval, for at most `HOLD_MAX_INTERVALS`.
+- The overlap check contradicts the boundary only when it was informative: it resolved
+  tiles, and the boundary offset is above the echo floor + `AGREE_MM`. Otherwise the
+  boundary decides alone.
+- Decision:
+  - `offset_mm > TOLERANCE_MM` votes YES; YES after `YES_VOTES = (3, 4)`;
+  - back to NO only below `CLEAR_RATIO × TOLERANCE_MM`;
+  - `None` ⇒ hold the previous answer;
+  - only a recalibration resets the baseline and the answer.
+- Output per interval, logged as JSONL: `answer`, `offset_mm`, `offset_px`, `confidence`,
+  `boundary_available`, `symptoms`, `mode` (blind or reference), and `warnings` (lamp,
+  camera moved, focus).
+- The log matters as much as the answer: comparing logged offsets with the professor's own
+  calls is how the thresholds get set.
 
 ---
 
 ## 5. The simulator (`sim/`)
 
 Purpose: generate camera frames with known truth. Fidelity matters more than speed, but
-keep a `fast` quality preset for tests.
+keep a `fast` quality preset for tests. Items marked "Phase 2" are still to build.
 
-- **Screen**: width/height mm, fiducial positions (4 corners of the frame), unlit screen
-  reflectance (so black level shows), optional screen gain/vignetting.
-- **Projector** (×2): resolution, homography px→mm (set from an arrangement preset or
-  explicit corners), blend map (from distance to its own edges, linear or cosine ramp),
-  gamma, brightness, black level (non-zero!), color balance, optional DLP flicker/banding.
-- **Content**: library of sources — slide decks (text-heavy, graphics), photos, video
-  clips (motion, cuts), flat gray, flat colors, black, letterboxed (black borders), stripes
-  of known period (to test repetition limits). Sequences with timestamps.
-- **Rendering**: for each frame, warp content through each projector's homography, apply
-  blend, gamma, black level; sum in linear light on the screen (mm grid); then camera.
-- **Camera**: resolution, homography mm→px (presets: whole screen + 5% margin; zoomed on
-  overlap + margins), PSF blur (Gaussian σ in px), shot + read noise, exposure/gain (locked),
-  gamma, vignetting, optional chromatic aberration, optional in-camera sharpening (to
-  reproduce that failure mode). Outputs 16-bit RGB.
-- **Perturbation** (`perturb.py`): applied to A, B or both as a modification of the
-  projector homography: shift (dx, dy mm), rotation (θ about a point), scale (s), keystone
-  (h31, h32). Schedules: `step(t0)`, `drift(rate per hour)`, `bump_then_hold`,
-  `oscillate(period)` (thermal), `none`.
-- **Nuisances** (`nuisance.py`): camera bump (changes camera homography, not projectors),
-  lamp dimming of one projector, room-light step, occluder (a person-shaped blob for N
-  frames), flicker. These must never cause YES.
-- **Ground truth per frame**: true relative homography, true `offset_mm` (max over the
-  true overlap polygon), true `offset_px`, perturbation type tags, aligned flag
-  (`offset_mm == 0`), nuisance tags, content type tag, timestamp. Written to
-  `metadata.jsonl`; frames as PNG. Scenarios are deterministic given `seed`.
+- **Screen**: width/height mm, reflectance, room light (ambient), wall surround.
+  - Phase 2: a bezel around the screen (`bezel_mm`, reflectance, optional light of its own)
+    carrying 8 ArUco DICT_4X4_50 markers. Each is 80 mm with a one-cell white quiet zone,
+    which detection needs. They sit at the 4 bezel corners plus two above and two below the
+    overlap, so a camera zoomed on the overlap still sees ≥ 4.
+  - A static reflectance map renders screen, bezel, paper and ink by exact area coverage.
+  - **Default ambient: 0.02** of projector white, a dim lecture hall. Planning estimates:
+    passive markers are undetectable in single frames at the dark-room 0.0003, and give
+    ≈ 0.12 mm homography error at 0.02. The `dark_room` scenario covers the dark case.
+  - Optional screen gain and vignetting (Phase 2): a high-gain screen is brighter near its
+    hotspot.
+- **Projector** (×2):
+  - resolution, homography px→mm (from an arrangement preset or explicit corners), gamma,
+    brightness, black level (non-zero!), colour balance;
+  - light is conserved under zoom and keystone (|det J| ratio);
+  - optional DLP flicker and banding (Phase 2).
+- **Blending setup**: the calibration software's state (H_cal per projector, content rect,
+  blend maps). Blend rule: each projector fades to 0 at its inner edges inside the content
+  (distance to those edges, cosine or linear ramp). `docs/findings.md` (2026-10-06) explains
+  why not "distance to all own edges".
+- **Content**: a library of procedural sources (no external assets), as sequences with
+  timestamps:
+  - slide decks (text density low, medium or high, plus graphics);
+  - photo-like textures;
+  - video clips with motion, pans and cuts. An exposure spanning two video frames blends
+    them in linear light;
+  - dark film scenes;
+  - flat gray, flat colours, black;
+  - letterboxed (black borders);
+  - stripes of known period;
+  - blank-overlap content (flat inside the overlap, textured elsewhere);
+  - one slide held for 20 minutes.
+- **Rendering**, per frame:
+  1. the calibration software builds each framebuffer from the content at H_cal;
+  2. each projector turns it into light (gamma, blend weight, black level);
+  3. the light lands through the *actual* homography and adds in linear light on the
+     screen mm grid;
+  4. then the camera.
+- **Camera**:
+  - resolution and homography mm→px. Presets: whole screen + 5% margin (built); zoomed on
+    the overlap + control strips (Phase 2);
+  - Gaussian PSF, part of it applied on the screen grid before resampling to prevent
+    aliasing;
+  - pixel integration by supersampling, shot + read noise, locked exposure, pedestal,
+    vignetting, optional gamma;
+  - optional in-camera sharpening (Phase 2), to reproduce that failure mode: its halos can
+    mimic double contours;
+  - Phase 2: output 16-bit linear luminance. Rec. 709 weights are applied right after the
+    projector light; RGB stays an option. This roughly halves render time and memory.
+- **Perturbation** (`perturb.py`):
+  - applied to A, B or both as a change of the actual homography, `h_actual = M(t) · h_cal`;
+  - kinds: shift (dx, dy mm), rotation (θ about a point), scale (s), keystone (h31, h32);
+  - schedules: `none`, `step(t0)`, `staircase(values, hold_s)`, `drift(rate per hour)`
+    (quantized to 0.02 px so render caches stay effective), `bump_then_hold`,
+    `oscillate(period)` (thermal).
+- **Nuisances** (`nuisance.py`). These must never cause YES:
+  - camera bump: changes the camera homography; the markers move with it;
+  - lamp dimming of one projector (e.g. 15%, black level included);
+  - room-light step;
+  - occluder: a person-shaped silhouette crossing the screen for N frames, which may cover
+    markers;
+  - flicker: per-projector brightness modulation, with optional banding when exposure is
+    not a multiple of the refresh period;
+  - in-camera sharpening left on by mistake;
+  - black-level uplift outside the overlap, if the blending software compensates.
+- **Ground truth per frame** (`truth.py`), written to `metadata.jsonl`:
+  - true relative homography `h_rel = H_actB·H_calB⁻¹·H_calA·H_actA⁻¹`;
+  - true `offset_mm`: the largest displacement over the calibrated overlap ∩ content rect
+    (vertices, edge midpoints and an interior grid);
+  - `offset_px`, using the coarser projector pitch;
+  - `aligned` (`offset_mm` < 0.02 mm);
+  - perturbation and nuisance tags, content tag, timestamp, camera homography.
+- **Frame delivery** (`frames.py`, `dataset.py`):
+  - A `FrameSource` renders frame i on demand, seeded from the scenario seed
+    (`SeedSequence(seed, spawn_key=(1, i))`), so any frame reproduces in any process.
+  - Caches skip work that did not change (projector light per content frame and geometry;
+    screen radiance; expected electrons), so a static frame costs about a tenth of a full
+    render.
+  - `make_dataset` always writes `scenario.yaml`, `setup.json` (exactly what the detector
+    may read) and `metadata.jsonl`. Frames are written as 16-bit PNG only on request
+    (`--frames all|sample|none`; ≈ 8 MB per mono frame).
+  - Reference mode: the source frames and the camera lag are part of the feed.
 
 Scenarios are YAML files in `scenarios/`. Adding a test idea must mean adding a YAML file,
-not code. Example keys: `arrangement`, `projectors`, `camera`, `content`, `perturbation`,
-`nuisances`, `duration_s`, `frame_rate`, `seed`.
+not code. Keys: `name`, `seed`, `quality`, `screen`, `arrangement`, `projectors`, `blend`,
+`content` (a sequence), `camera`, `perturbation`, `nuisances`, `reference`, `duration_s`,
+`sample_every_s`, `sweep` (one dataset variant per value).
 
 ---
 
@@ -251,124 +491,183 @@ not code. Example keys: `arrangement`, `projectors`, `camera`, `content`, `pertu
 For every dataset, run the detector with the interval `ADJUSTABLE_INTERVAL_IN_SECONDS` and
 produce:
 
-- **Detection rate vs true offset** (a psychometric-style curve) per misalignment type,
-  per arrangement, per content type.
+- **Detection rate vs true offset** (a psychometric-style curve) per misalignment type, per
+  arrangement and per content type: overall and **per signal** (boundary, echo, hotspots,
+  borders, kernel).
 - **False positive rate** on aligned runs, with and without nuisances.
 - **Latency**: intervals from onset to the first YES.
-- **Boundary availability rate**: fraction of intervals where the primary tool could
-  answer, per content type. This is the key number for the "boundary first" decision.
-- **Offset accuracy**: estimated vs true offset (mean abs error in mm and px).
+- **Boundary availability rate**: the fraction of intervals where the primary tool could
+  answer, per content type. This is the key number for the "boundary first" decision. Also
+  the **"can't tell" rate** of the whole detector.
+- **Offset accuracy**: estimated vs true offset (mean abs error in mm and px), per signal.
+- **Blind vs reference**: the same datasets in both modes.
 - **Symptom confusion**: which symptoms fired for which true type.
 - **Threshold sweep**: all of the above across `TOLERANCE_MM` values.
-- **Diagnostic images** per scenario: box overlays on the rectified frame, overlap/core/
-  control masks, edge profiles vs baseline, difference maps, SSIM term maps, cepstrum
-  peaks. These are for humans; keep them easy to open.
+- **Diagnostic images** per scenario: box overlays on the rectified frame, overlap / core /
+  control masks, edge profiles vs baseline, hotspot maps, cepstra and kernels. These are
+  for humans; keep them easy to open.
 
 Reports: `results.jsonl`, `summary.csv`, PNG plots, `report.md` per run.
 
 ---
 
-## 7. Initial scenario catalogue
+## 7. Scenario catalogue
 
-Create these YAML scenarios first; each exists to answer a specific question.
+Create these YAML scenarios; each exists to answer a specific question. Defaults: ambient
+0.02, whole-screen camera, mono, `sample_every_s: 0.5`.
 
 | Scenario | Question it answers |
 | --- | --- |
-| `aligned_slides` | FPR on static text-heavy content, no perturbation. |
-| `aligned_video` | FPR under motion, cuts, dark scenes. |
-| `aligned_nuisances` | Camera bump, lamp dimming, room light, occluder ⇒ still NO? |
+| `aligned_slides` | FPR on static text-heavy decks (three text densities, 20 min). |
+| `held_slide` | One slide for 20 min: does the detector cope with zero content variety (echo pools starve; boundary and hotspots carry on)? |
+| `aligned_video` | FPR under motion, fast motion, cuts, dark scenes. |
+| `aligned_nuisances` | Camera bump, 15% lamp dimming, room-light step, occluder, flicker, in-camera sharpening ⇒ still NO? |
 | `shift_sweep` | Steps of 0.25, 0.5, 1, 2, 4, 8 px shift across and along the overlap edge; detection curve. |
-| `rotation_sweep` | Small rotations of B about its center and about a far corner. |
+| `rotation_sweep` | Small rotations of B about its centre and about a far corner. |
 | `scale_keystone` | Zoom and tilt perturbations; does the 6→8 param escalation work? |
 | `slow_drift` | 2 px over 2 hours; latency and timed safety check. |
 | `arrangements` | Same shift sweep across side-by-side, stacked, rotated, corner, different-size, large-overlap. |
-| `boundary_hidden` | Letterboxed content + bright overlap: how often is the boundary unavailable, and does the overlap check catch what the boundary can't? |
-| `repetition_limit` | Stripes of period P with shifts near P/2 and P: measure the aliasing limit. |
-| `recurring_frames` | Title slide shown after calibration and again later: does matched SSIM help? |
-| `camera_zoomed` | Camera on the overlap only vs whole screen: smallest detectable offset. |
+| `boundary_hidden` | Letterboxed photos and video + bright overlap: how often is the boundary unavailable, and does the overlap check catch what the boundary can't? |
+| `blank_band` | Nothing textured inside the overlap: the hotspot fit and the boundary must carry the check. |
+| `dark_film` | Dark scenes and fades: raster edges via black level. |
+| `repetition_limit` | Stripes of period P with shifts near P/2 and P: measure the aliasing limit (blind echo vs reference kernel). |
+| `camera_zoomed` | Camera on the overlap + control strips only vs whole screen: smallest detectable offset per signal. |
+| `dark_room` | Ambient 0.0003 with and without bezel light: can the markers be found, and what does averaging buy? |
 
 ---
 
-## 8. Build order (each phase ends with tests passing and a short `docs/findings.md` entry)
+## 8. Build order
 
-1. **Scaffold + simulator core.** `pyproject.toml`, package layout, config dataclasses.
-   Render an aligned side-by-side scene through the camera; `scripts/visualize.py` shows
-   it. Done: a human can look at the PNG and see a seamless image with a faint black-level
-   raster around it.
-2. **Perturbation + dataset generator.** Scenario YAML → frames + `metadata.jsonl` with
-   per-frame truth. Done: `shift_sweep` and `aligned_slides` datasets generate
-   deterministically; a test asserts truth offsets match the injected homographies.
-3. **Rectification + geometry.** Fiducials → homography → mm canvas; `OverlapGeometry`
-   from two boxes of any shape. Done: property tests on random convex quads (overlap
-   polygon, core tiles, control areas, edge pieces all valid for rotated/corner cases).
-4. **Boundary analysis (primary).** Calibration measurement + per-interval re-measure +
-   relative homography fit. Done: on `shift_sweep` and `rotation_sweep`, estimated offset
-   within 0.5 px of truth whenever `boundary_available`; `None` (not a wrong number) when
-   edges are hidden.
-5. **Runner + decision.** Baseline capture, interval loop, hysteresis/voting, JSONL output.
-   Done: `aligned_*` datasets produce zero YES; `shift_sweep` at 4 px produces YES within
-   `YES_VOTES` intervals.
-6. **Overlap artifact check.** The four symptoms + fusion. Done: `boundary_hidden` shows
-   the artifact check catching offsets the boundary layer could not see; nuisances still
-   produce no YES.
-7. **Evaluation harness.** Metrics, sweeps, plots, diagnostic images, `report.md`.
-   Done: one command evaluates every scenario and writes the detection curves.
-8. **Confirmation + learning.** Matched-frame SSIM, reference library, threshold learning
-   from simulated "button presses" (ground truth offsets above a hidden human threshold).
-9. **Stretch.** Reference mode (video feed known) via multi-frame Wiener deconvolution;
-   multi-projector grids; camera zoomed on overlap.
+Each phase ends with tests passing, a `docs/findings.md` entry and a commit. Do not start a
+phase before the done conditions of the phases it depends on hold.
 
-Do not start phase N+1 before phase N's "done" condition holds.
+| Phase | Scope | Done condition | Depends on | Status |
+|---|---|---|---|---|
+| 1 Scaffold + simulator core | pyproject, packages, config dataclass; screen, projector, blending setup, content, camera, render chain; `scripts/visualize.py` | A human sees a seamless image with a faint black-level raster around it | — | **done 2026-10-06**: seam 3.2e-6, raster edge within 0.0001 mm, 0.43 s per frame, 68 tests |
+| 2 Simulator datasets | bezel + markers, mono camera, zoomed preset, arrangement presets, content library + sequences, perturbations, nuisances, truth, FrameSource + caches, `make_dataset` | `shift_sweep` and `aligned_slides` generate twice with identical metadata and frame hashes; every frame's `offset_mm` within 1e-6 mm of the injected value; markers found 8/8 at ambient 0.02 with centre error < 0.2 px | 1 | next |
+| 3 Detector inputs + geometry | `inputs.py`, `rectify.py`, `polygon.py`, `blending.py`, `geometry.py`, `classify.py`, `results.py` | 200 random convex quad pairs (rotated, corner, nested): overlap, core tiles, controls and pieces valid; blend weights equal the simulator's within 1e-6; rectification error ≤ 0.05 mm; camera bump re-solved within 0.1 mm | 1 | |
+| 4 Boundary (primary) | `edges.py`, `field.py`, `boundary.py`; minimal `eval/feed.py`, `eval/metrics.py`, `scripts/run_detector.py` | On `shift_sweep` and `rotation_sweep`: offset within 0.2 mm of truth whenever available (spec: 0.5 px); `None`, not a wrong number, when edges are hidden; availability ≥ 95% on `aligned_slides` and `aligned_video` | 2, 3 | |
+| 5 Runner + decision | `baseline.py`, `pools.py`, `decision.py`, `runner.py`, JSONL output | `aligned_*` including nuisances: zero YES over ≥ 100 intervals; 4 px → YES within `YES_VOTES` intervals; 2 px → YES; 1 px → NO | 4 | |
+| 6a Echo | `echo.py`, developed on synthetic overlap data `O = a·S + b·warp(S)` | At 1.74 camera px/mm: 1.5–4 mm within 0.3 mm. At 0.87: ≥ 3 mm within 0.3 mm, and 1.5–2.5 mm flagged `unresolved`. Aligned twins: no detection over 50 seeds | 3 | |
+| 6b Hotspots + borders | `seam.py`, `borders.py`, synthetic first | Flat frames: 0.5 px across-shift within 0.2 px; along-shift → no offset; lamp −5% → warning with offset < 0.3 mm; aligned text crossing blocks → no offset | 3 | |
+| 6c Overlap check + fusion | `artifacts.py`, `fusion.py`, runner hook, safety check | `boundary_hidden` and `camera_zoomed`: 2 px caught by the overlap check where the boundary returns `None`; nuisances still produce no YES | 5, 6a, 6b | |
+| 7 Reference mode | `source.py`, `kernel.py` | Whole-screen `shift_sweep`: kernel offset within 0.15 mm at 0.25–4 px; aligned < 0.1 mm; camera lag of 3 frames with cuts: wrong matches rejected | 6c | |
+| 8 Evaluation harness | `eval/sweep.py`, `eval/report.py`, `scripts/evaluate.py`, diagnostic images | One command evaluates every scenario and writes the detection curves, FPR, latency, availability, confusion, blind vs reference, and `report.md` | 6c | |
+| 9 Learning + stretch | threshold learning from simulated recalibrate presses (truth offsets above a hidden human threshold); grids of more than two projectors | Learned threshold within 10% of the hidden one (provisional) | 8 | |
+
+Phases 2 and 3 can run in parallel, and so can 6a/6b alongside 4/5 (they need only the
+geometry).
 
 ---
 
 ## 9. Engineering conventions
 
-- Python ≥ 3.11, `numpy`, `opencv-python-headless`, `scikit-image` (SSIM), `pyyaml`,
-  `pytest`, `matplotlib` (plots only). No GUI dependencies; everything runs headless.
-- Type hints everywhere; `@dataclass` for configs and results; no global mutable state in
-  `detector/` (the runner owns state).
-- Determinism: every random draw takes a `numpy.random.Generator` seeded from the scenario.
-- Linear light inside; gamma only at the camera output and content input.
-- Every module has a docstring that explains the physics it models or exploits, in plain
-  words, before the code. A reader with no computer-vision background should understand
-  *why* each step exists.
-- Keep modules under ~300 lines; split rather than grow.
-- Tests: unit tests per function, property tests for geometry, regression tests on fixed
-  seeds with tolerances stated in mm. A test that asserts a symptom fires must also assert
-  it does *not* fire on the matching aligned scenario.
-- Logging: structured JSONL per interval. Never print tensors.
-- Commit per phase with a message that states which "done" condition was met and the
-  numbers that show it.
+- **Tooling:** Python ≥ 3.11 (3.13 in `.venv`), managed with `uv`: `uv sync`,
+  `uv run pytest`, `uv run python -m scripts.<name>`.
+- **Dependencies:**
+  - `numpy`, `opencv-python-headless` ≥ 5.0 (continuous sub-pixel warps for float32),
+    `pyyaml`, `pytest`;
+  - `matplotlib` for plots only, added when first used;
+  - no GUI dependencies; everything runs headless.
+- **Code shape:**
+  - type hints everywhere;
+  - `@dataclass` for configs and results;
+  - no global mutable state in `detector/` (the runner owns state);
+  - keep modules under ~300 lines; split rather than grow.
+- **Determinism:** every random draw takes a `numpy.random.Generator`, seeded from the
+  scenario through `SeedSequence` spawn keys.
+- **Light:** linear inside; gamma only at the content input (and at the camera output, if
+  enabled). Camera frames are 16-bit linear luminance.
+- **Docstrings:** every module has a docstring that explains the physics it models or
+  exploits, in plain words, before the code. A reader with no computer-vision background
+  should understand *why* each step exists.
+- **Warps:** every warp goes through one wrapper per package that accepts only float32 with
+  1, 3 or 4 channels. Other types round sub-pixel positions to 1/32 px.
+- **Tests:**
+  - unit tests per function, property tests for geometry;
+  - regression tests on fixed seeds, with tolerances stated in mm (or relative brightness,
+    with the physical reason);
+  - a test that asserts a symptom fires must also assert it does *not* fire on the
+    matching aligned twin;
+  - a measurement that cannot see must be tested to return `None`, not 0.
+- **Logging:** structured JSONL per interval. Never print tensors.
+- **Commits:** one per phase, with a message that states which "done" condition was met and
+  the numbers that show it.
 
 ---
 
 ## 10. Config (names are the contract; defaults are starting guesses)
 
 ```yaml
+# cadence
 ADJUSTABLE_INTERVAL_IN_SECONDS: 30      # boundary check cadence
-SAFETY_CHECK_S: 900                     # timed artifact check regardless of boundary result
-TRUSTED_WINDOW_S: 600                   # after calibration: refine boxes, learn references
-POOL_FRAMES: 60                         # usable frames pooled per artifact check
-TOLERANCE_MM: 1.7                       # ≈ 1 arcmin at 6 m; swept in evaluation
-TRIGGER_MM: 0.85                        # boundary offset that triggers the artifact check
+SAFETY_CHECK_S: 900                     # timed overlap check regardless of boundary result
+TRUSTED_WINDOW_S: 600                   # after calibration: refine boxes, fill baseline pools
+SAMPLE_EVERY_S: 0.5                     # frame sampling period for the pools
+POOL_FRAMES: 60                         # usable frames pooled per overlap check
+# thresholds in mm
+TOLERANCE_MM: 1.7                       # ≈ 1 arcmin at 6 m (≈ 1.6 px at 1.04 mm/px; pseudocode: 2 px); swept
+TRIGGER_MM: 0.85                        # boundary offset that triggers the overlap check
 AGREE_MM: 1.4                           # layers "agree" within this
+MIN_OFFSET_MM: 1.5                      # smallest echo the cepstrum can separate from its origin peak
+INLIER_MM: 0.7                          # RANSAC inlier distance for the smooth motion field
+# decision
 YES_VOTES: [3, 4]                       # K of N intervals
-CLEAR_RATIO: 0.5
-CORE_MIN_WEIGHT: 0.2
+CLEAR_RATIO: 0.5                        # back to NO only below CLEAR_RATIO × TOLERANCE_MM
+HOLD_MAX_INTERVALS: 2                   # intervals a boundary-vs-overlap disagreement may hold
+# geometry on the mm canvas
+CORE_MIN_WEIGHT: 0.2                    # ≈ the pseudocode's CORE_FRACTION 0.6 for a linear ramp
 TILE_MM: 64
 CTRL_MARGIN_MM: 40
 EDGE_PIECE_MM: 80
 CANVAS_PX_PER_MM: 2.0
-HASH_MATCH_BITS: 6
-MIN_PEAK_SNR: 6.0
-MIN_GOOD_TILES: 3
+# frame routing
+MOTION_LEVEL: 0.02                      # mean |frame difference| (× white) above this: skip
+MAX_CLIPPED: 0.002                      # saturated fraction above this: skip
+DARK_LEVEL: 0.003                       # region mean (× white) below this: dark
+MIN_TILE_EDGES: 0.02                    # edge density a tile needs to count as textured
+VARIETY_MAX_NCC: 0.98                   # blind mode keeps a frame only if it differs from the last kept
+FIDUCIAL_MOVE_PX: 0.3                   # marker motion above this: camera moved, re-solve, never YES
+# evidence quality
+MIN_PEAK_SNR: 6.0                       # robust z-score a cepstral or kernel peak needs
+NULL_FACTOR: 1.5                        # ... and this × the control-vs-control null
+ECHO_FLOOR_CAMERA_PX: 2.5               # the cepstrum cannot resolve echoes below this many camera px
+MIN_GOOD_TILES: 3                       # fewer valid tiles -> "can't tell"
+MIN_TILE_FRAMES: 20                     # textured frames an echo tile needs
+MIN_SEAM_FRAMES: 20                     # flat (or dark) frames a hotspot block needs
+MIN_EDGE_SNR: 4.0                       # pooled SNR an edge piece needs to count
+LINE_INLIER_FRAC: 0.6                   # tiles must agree on one smooth field this often
+FLAT_MAX_DEV: 0.01                      # a block is flat if its sub-blocks agree within this
+LAMP_WARN: 0.03                         # fitted lamp gain off by more than this: lamp warning
+# reference mode
+REFERENCE_MODE: auto                    # auto | on | off
+WIENER_LAMBDA: 0.01                     # Wiener regularization, × the mean source power
+SOURCE_RING: 10                         # source frames kept for lag matching
+MATCH_MIN_NCC: 0.9                      # a source frame must match the camera frame this well
 ```
+
+`detector.yaml` holds these defaults with comments; `tests/test_config.py` keeps the
+dataclass, the YAML file and this list identical.
 
 ---
 
-## 11. Out of scope for now
+## 11. Out of scope for now, and open hardware questions
 
-Real camera drivers, projector control, reading the recalibrate button, GUIs, grids of
-more than two projectors (keep the geometry general so it can come later), stereo/3D
-content, curved screens.
+Out of scope:
+- real camera drivers, projector control, reading the recalibrate button, GUIs;
+- grids of more than two projectors (keep the geometry general so it can come later);
+- stereo/3D content, curved screens;
+- SSIM;
+- colour fringing / convergence checks (RGB stays a simulator option only).
+
+Open questions for the real installation (from the pseudocode; the simulator sweeps them
+meanwhile):
+- Where exactly is the overlap, and what shape are the blend ramps: linear, cosine or
+  custom, applied in linear light or in gamma? The blending software should report both.
+- Can the script read the video sent to the projectors? Yes unlocks reference mode.
+- Camera resolution, lens and mount: whole screen at ≥ 0.87 camera px per mm, or zoomed on
+  the overlap?
+- How large an offset does the professor notice from the seats? That sets `TOLERANCE_MM`.
+- Is black-level compensation enabled outside the overlap?
+- Does the recalibrate button emit a signal the script can read?
+- Can printed markers go on the screen bezel, and is there enough room light to see them?
