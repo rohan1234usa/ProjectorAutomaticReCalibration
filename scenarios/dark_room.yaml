@@ -1,5 +1,5 @@
-# Question: in a dark room (ambient 0.0003), can the markers be found, with or without a small
-# lamp on the bezel, and what does averaging frames buy? Aligned slides for five minutes.
+# Question: in a dark room (ambient 0.0003), can the markers be found, with or without a little
+# light of the bezel's own, and what does averaging frames buy? Aligned slides for five minutes.
 extends: _lecture_hall.yaml
 name: dark_room
 seed: 151

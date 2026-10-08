@@ -1,7 +1,6 @@
 """Datasets on disk: round trip, byte-identical reruns, nothing but the setup in setup.json, and the checker."""
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -115,3 +114,59 @@ def test_one_variant_split_across_workers_gives_the_same_files(sweep_file, tmp_p
     for f in files:
         if f.name not in ("timing.json", "dataset.json"):
             assert (tmp_path / "serial" / f).read_bytes() == (tmp_path / "split" / f).read_bytes(), str(f)
+
+
+def test_checker_covers_every_kind_and_continuous_schedules(tmp_path):
+    """Rotation, scale and keystone, stepped or ramped or drifting: closed forms and brute force all pass.
+
+    Truth only (--frames none), so it runs in seconds. A corrupted schedule value or offset must fail.
+    """
+    cfg = tiny_shift_sweep()
+    cfg["perturbation"] = {"b": {"kind": "rotation", "magnitude_px": 2, "pivot": "far_corner",
+                                 "schedule": {"type": "step", "t0_s": 3}}}
+    cfg["sweep"] = {
+        "perturbation.b.kind": ["rotation", "scale", "keystone"],
+        "perturbation.b.magnitude_px": [0, -1.5, 2],
+        "perturbation.b.schedule": [{"type": "step", "t0_s": 3}, {"type": "ramp", "t0_s": 3, "duration_s": 2},
+                                    {"type": "drift", "t0_s": 3, "rate_per_h": 1800}],
+    }
+    path = tmp_path / "kinds.yaml"
+    path.write_text(yaml.safe_dump(cfg, sort_keys=False))
+    out = tmp_path / "kinds"
+    make_dataset.main([str(path), str(out)])
+    assert check_dataset.main([str(out)])
+    stepped = check_dataset.check(out / "kind=scale__magnitude_px=2__schedule=step-3")
+    ramped = check_dataset.check(out / "kind=keystone__magnitude_px=-1.5__schedule=ramp-3-2")
+    assert stepped["closed_form_frames"] == 12 and ramped["brute_force_frames"] > 0  # a partial keystone: brute force
+
+    meta = out / "kind=rotation__magnitude_px=2__schedule=drift-3-1800" / "metadata.jsonl"
+    original = meta.read_text()
+    lines = [json.loads(s) for s in original.splitlines()]
+    lines[-1]["perturbation"][0]["applied"] *= 1.5  # off the schedule by far more than a quantum
+    meta.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    assert not check_dataset.main([str(out)])
+    meta.write_text(original)
+    meta = out / "kind=keystone__magnitude_px=-1.5__schedule=ramp-3-2" / "metadata.jsonl"
+    lines = [json.loads(s) for s in meta.read_text().splitlines()]
+    lines[7]["truth"]["offset_mm"] += 0.01
+    meta.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    assert not check_dataset.main([str(out)])
+
+
+def test_variants_index_keeps_variants_written_by_earlier_runs(sweep_file, tmp_path):
+    out = tmp_path / "sweep"
+    make_dataset.main([str(sweep_file), str(out), "--variants", "magnitude_px=4"])
+    make_dataset.main([str(sweep_file), str(out), "--variants", "magnitude_px=0"])
+    index = json.loads((out / "variants.json").read_text())
+    assert [v["variant"] for v in index["variants"]] == ["magnitude_px=0", "magnitude_px=4"]  # in the sweep's order
+    with pytest.raises(SystemExit):
+        make_dataset.main([str(sweep_file), str(out), "--every", "0"])
+
+
+def test_a_missing_png_is_reported_by_path(sweep_file, tmp_path):
+    write_dataset(load_scenarios(sweep_file)[0], tmp_path / "ds", frames="sample", every=5)
+    (tmp_path / "ds" / "frames" / "000005.png").unlink()
+    ds = read_dataset(tmp_path / "ds")
+    with pytest.raises(FileNotFoundError, match="000005.png"):
+        ds.frame(5)
+    assert ds.info["environment"]["git_dirty"] in (True, False, None)

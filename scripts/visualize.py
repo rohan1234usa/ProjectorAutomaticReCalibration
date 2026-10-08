@@ -1,7 +1,8 @@
 """Quick-look image of one simulated camera frame, for humans.
 
-Renders one frame of a scenario (frame 0 unless ``--frame``) and writes ``view.png``: the camera
-frame shown with a logarithmic display curve,
+Renders one frame of a scenario (frame 0 unless ``--frame``) and writes a PNG named after the
+variant and frame (``view.png`` for frame 0 of a scenario without a sweep): the camera frame
+shown with a logarithmic display curve,
 
     y = ln(1 + x/b) / ln(1 + 1/b),
 
@@ -12,17 +13,20 @@ content and the faint black-level raster at the same time.
 
 Below it, a second panel shows the same frame dimmed, with the scenario's true geometry drawn
 on top: each projector's box where it really lands in this frame (its lit raster), the overlap
-polygon where both shine, the content rect and the bezel markers. When aligned, the blend makes the overlap invisible in bright content, so without
-this panel it is easy to mistake a content feature for a projector boundary.
+polygon where both shine, the content rect and the bezel markers. When aligned, the blend makes
+the overlap invisible in bright content, so without this panel it is easy to mistake a content
+feature for a projector boundary.
 
 It also prints one JSON line: render time, and the levels measured in small patches of the
 frame -- the unlit screen, each projector's black, and the overlap's doubled black (the black
 patches need content with a black border). Each patch sits at the point deepest inside its
-true region, so it works for any arrangement; a region that does not exist gives ``null``.
-Using the true geometry is fine here: this is harness code, not the detector.
+true region in this frame, so it works for any arrangement and any perturbation; a region
+that does not exist gives ``null``. Using the true geometry is fine here: this is harness code,
+not the detector.
 
-Usage: python -m scripts.visualize scenarios/aligned_side_by_side.yaml --out out/phase1
-       python -m scripts.visualize scenarios/shift_sweep.yaml --variant 'magnitude_px=8__direction=across' --frame 1300
+Usage:
+    python -m scripts.visualize scenarios/aligned_side_by_side.yaml --out out/phase1
+    python -m scripts.visualize scenarios/shift_sweep.yaml --variant 'magnitude_px=8__direction=across' --frame 1300
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ import cv2
 import numpy as np
 
 from sim.camera import Camera
+from sim.content import border_px
 from sim.frames import FrameSource
 from sim.planar import apply_h, box_mm, clip_convex, points_in_convex, rect_polygon
 from sim.render import QUALITY
@@ -71,13 +76,14 @@ def border_mm(scenario: Scenario, i: int = 0) -> float:
     key = seq.segments(scenario.timing.time(i), scenario.timing.exposure)[0][0]
     _, y0, _, y1 = scenario.scene.setup.content_rect_mm
     size = scenario.scene.setup.content_size()
-    return round(seq.items[key[0]].border_frac * size[1]) * (y1 - y0) / size[1]
+    return border_px(seq.items[key[0]].border_frac, size) * (y1 - y0) / size[1]
 
 
-def region_masks(scene: Scene, border: float = 0.0) -> Regions:
+def region_masks(scene: Scene, border: float = 0.0, boxes: dict[str, np.ndarray] | None = None) -> Regions:
     """Screen sample points (rows, cols, 2) and boolean masks of the regions that matter.
 
-    only_a / only_b / overlap: lit by one or both projectors. unlit: on the screen, outside both
+    only_a / only_b / overlap: lit by one or both projectors, whose boxes are `boxes` (where they
+    land in the frame shown) or else the calibrated ones. unlit: on the screen, outside both
     rasters. black_*: inside the content rect but in its black border, split by who lights it.
     """
     w, h = scene.screen.size_mm
@@ -85,8 +91,9 @@ def region_masks(scene: Scene, border: float = 0.0) -> Regions:
     ys = np.arange(_REGION_STEP_MM / 2, h, _REGION_STEP_MM)
     pts = np.stack(np.meshgrid(xs, ys), axis=-1)
     a, b = scene.setup.names
-    in_a = points_in_convex(scene.setup.box_mm(a), pts)
-    in_b = points_in_convex(scene.setup.box_mm(b), pts)
+    boxes = boxes or {n: scene.setup.box_mm(n) for n in (a, b)}
+    in_a = points_in_convex(boxes[a], pts)
+    in_b = points_in_convex(boxes[b], pts)
     x0, y0, x1, y1 = scene.setup.content_rect_mm
     m = border
     x, y = pts[..., 0], pts[..., 1]
@@ -151,7 +158,7 @@ def _fixed_point(poly_px: np.ndarray) -> np.ndarray:
 
 def _dashed(img: np.ndarray, poly_px: np.ndarray, color: tuple[int, int, int], thickness: int, dash: float) -> None:
     """Closed dashed outline, so a second outline lying on top of another stays distinguishable."""
-    for p, q in zip(poly_px, np.roll(poly_px, -1, axis=0)):
+    for p, q in zip(poly_px, np.roll(poly_px, -1, axis=0), strict=True):
         length = float(np.hypot(*(q - p)))
         for s in np.arange(0.0, length, 2 * dash):
             a = p + (q - p) * (s / length)
@@ -211,10 +218,11 @@ def caption(width: int, text: str) -> np.ndarray:
 
 
 def main(argv: list[str] | None = None) -> dict:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("scenario", type=Path)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("scenario", type=Path, help="scenario YAML file")
     parser.add_argument("--out", type=Path, default=None, help="output directory (default out/<scenario>)")
-    parser.add_argument("--quality", choices=sorted(QUALITY), default=None)
+    parser.add_argument("--quality", choices=sorted(QUALITY), default=None,
+                        help="override the scenario's render quality preset")
     parser.add_argument("--variant", default=None, help="sweep variant to show")
     parser.add_argument("--frame", type=int, default=0, help="frame index (default 0)")
     args = parser.parse_args(argv)
@@ -241,11 +249,12 @@ def main(argv: list[str] | None = None) -> dict:
             f"  |  log display y = ln(1+x/b)/ln(1+1/b), x = radiance / one projector's white, b = black level = 1/{1 / black:.0f}")
     legend = ("true geometry: orange = projector A's box (lit raster)  |  blue dashed = projector B's box  |"
               "  green = overlap (A and B both shine; blended)  |  white dashed = content rect  |  magenta = markers")
-    regions = region_masks(scene, border_mm(scenario, args.frame))
     boxes = {n: box_mm(state.h_actual[n], scene.setup.resolution[n]) for n in scene.setup.names}
+    regions = region_masks(scene, border_mm(scenario, args.frame), boxes)
     view = np.vstack([view, caption(view.shape[1], text), overlay_panel(scene, view, regions, boxes, source.camera_for(state)),
                       caption(view.shape[1], legend)])
-    path = out_dir / "view.png"
+    plain = scenario.variant == scene.name and args.frame == 0
+    path = out_dir / ("view.png" if plain else f"view_{scenario.variant}_frame{args.frame}.png")
     cv2.imwrite(str(path), cv2.cvtColor(view, cv2.COLOR_RGB2BGR))
 
     summary: dict = {

@@ -11,7 +11,7 @@ def test_a_pixel_straddling_screen_and_wall_mixes_them_by_area():
     screen = Screen((600.0, 260.0), reflectance=0.9, wall_reflectance=0.33)
     grid = ScreenGrid.covering_extent(screen.extent_mm, 1.44)
     refl, lamp = surfaces(grid, screen)
-    c = grid.coverage(0.0, 260.0, 1)[-1]
+    c = grid.coverage(0.0, 260.0, "y")[-1]
     assert 0 < c < 1
     assert refl[-1, 0] == pytest.approx(0.9 * c + 0.33 * (1 - c), rel=1e-6)
     assert refl[: grid.shape[0] - 1, : grid.shape[1] - 1].min() == pytest.approx(0.9)

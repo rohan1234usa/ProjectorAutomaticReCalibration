@@ -198,10 +198,11 @@ scenarios/              # YAML scenario files (one per test idea; adding a test 
 scripts/
   make_dataset.py       # python -m scripts.make_dataset scenarios/xxx.yaml out/xxx [--frames all|sample|none]  [done]
   check_dataset.py      # python -m scripts.check_dataset out/xxx: recorded truth vs injected offsets, paired variants [done]
+  check_geometry.py     # the checker's own plane geometry, independent of sim/                  [done]
   run_detector.py       # python -m scripts.run_detector out/xxx --config detector.yaml
   evaluate.py           # python -m scripts.evaluate out/xxx/results.jsonl
   visualize.py          # quick look at one frame, with the true geometry drawn on top            [done]
-tests/                  # pytest; unit + property + regression (fixed seeds); -m slow for demo scale [done: Phases 1, 2a]
+tests/                  # pytest; unit + property + regression (fixed seeds); -m slow for demo scale [done: Phases 1, 2]
 docs/
   findings.md           # dated findings with numbers
   research/pseudocode.md  # the original pseudocode this brief generalizes
@@ -364,7 +365,8 @@ alarm"). `agreeing` is the number of symptoms independently above `TOLERANCE_MM`
   only for large offsets.
 - There is no resolution floor (planning estimate: within ≈ 0.1 mm for 0.5–4 mm offsets at
   whole-screen sampling). In reference mode, double contours become a sub-pixel symptom.
-  Repetitive content cannot fool it.
+  Repetitive content fools it only at whole-period shifts, where the kernel is periodic too
+  and only the boundary can tell (`docs/findings.md`, 2026-10-07; `repetition_limit`).
 
 ### 4.5 Baseline (`baseline.py`)
 Captured after every calibration and refined during `TRUSTED_WINDOW_S`:
@@ -406,38 +408,44 @@ Captured after every calibration and refined during `TRUSTED_WINDOW_S`:
 ## 5. The simulator (`sim/`)
 
 Purpose: generate camera frames with known truth. Fidelity matters more than speed, but
-keep a `fast` quality preset for tests. Items marked "Phase 2" are still to build.
+keep a `fast` quality preset for tests (`standard` is the default, `fine` checks that a result
+does not depend on sampling). Everything below is built (Phases 1 and 2) except screen gain.
 
-- **Screen**: width/height mm, reflectance, room light (ambient), wall surround.
-  - Phase 2: a bezel around the screen (`bezel_mm`, reflectance, optional light of its own)
-    carrying 8 ArUco DICT_4X4_50 markers. Each is 80 mm with a one-cell white quiet zone,
-    which detection needs. They sit at the 4 bezel corners plus two above and two below the
-    overlap, so a camera zoomed on the overlap still sees ≥ 4.
-  - A static reflectance map renders screen, bezel, paper and ink by exact area coverage.
-  - **Default ambient: 0.02** of projector white, a dim lecture hall. Planning estimates:
-    passive markers are undetectable in single frames at the dark-room 0.0003, and give
-    ≈ 0.12 mm homography error at 0.02. The `dark_room` scenario covers the dark case.
+- **Screen**: width/height mm, reflectance, room light (ambient), and the wall around it (a
+  reflectance lit by the room light).
+  - A bezel around the screen (`screen.bezel`: `width_mm`, reflectance, optional `light` of
+    its own) carries 8 ArUco DICT_4X4_50 markers. Each is 80 mm with a one-cell white quiet
+    zone, which detection needs. They sit at the 4 bezel corners plus two above and two below
+    the overlap (beside it, for a horizontal overlap), so a camera zoomed on a vertical
+    overlap still sees ≥ 4 (the zoomed preset is refused for `stacked` and `large_overlap`).
+  - A static reflectance map renders screen, bezel, wall, paper and ink by exact area coverage
+    (per material, so marker edges sit at their true sub-pixel positions).
+  - **Default ambient: 0.02** of projector white, a dim lecture hall. Measured in Phase 2:
+    8/8 markers found in single frames, centre error p95 0.09 px; at the dark-room 0.0003 none
+    are found in a single frame. The `dark_room` scenario covers the dark case.
   - Optional screen gain and vignetting: a high-gain screen is brighter near its hotspot (not
     built yet: it needs a gain map per projector; `docs/findings.md`, 2026-10-07).
 - **Projector** (×2):
   - resolution, homography px→mm (from an arrangement preset or explicit corners), gamma,
     brightness, black level (non-zero!), colour balance;
   - light is conserved under zoom and keystone (|det J| ratio);
-  - optional DLP flicker and banding (Phase 2).
+  - flicker and rolling-shutter banding are nuisances (below).
 - **Blending setup**: the calibration software's state (H_cal per projector, content rect,
-  blend maps). Blend rule: each projector fades to 0 at its inner edges inside the content
-  (distance to those edges, cosine or linear ramp). `docs/findings.md` (2026-10-06) explains
-  why not "distance to all own edges".
-- **Content**: a library of procedural sources (no external assets), as sequences with
-  timestamps:
+  blend maps, optional black-level uplift). Blend rule: each projector fades to 0 at its inner
+  edges inside the content (distance to those edges, cosine or linear ramp).
+  `docs/findings.md` (2026-10-06) explains why not "distance to all own edges".
+- **Arrangements** (`arrangements.py`): side by side, stacked, rotated, corner, different
+  sizes, large overlap, or explicit corners; each pair is centred on the screen.
+- **Content** (`pictures.py`, `sequence.py`): a library of procedural sources (no external
+  assets), as sequences with timestamps:
   - slide decks (text density low, medium or high, plus graphics);
   - photo-like textures;
   - video clips with motion, pans and cuts. An exposure spanning two video frames blends
     them in linear light;
   - dark film scenes;
   - flat gray, flat colours, black;
-  - letterboxed (black borders);
-  - stripes of known period;
+  - letterboxed (black bars);
+  - stripes of known period, sinusoidal in light;
   - blank-overlap content (flat inside the overlap, textured elsewhere);
   - one slide held for 20 minutes.
 - **Rendering**, per frame:
@@ -447,36 +455,43 @@ keep a `fast` quality preset for tests. Items marked "Phase 2" are still to buil
      screen mm grid;
   4. then the camera.
 - **Camera**:
-  - resolution and homography mm→px. Presets: whole screen + 5% margin (built); zoomed on
-    the overlap + control strips (Phase 2);
+  - resolution and homography mm→px. Presets: whole screen + 5% margin; zoomed on the overlap
+    + control strips + the markers at its ends, 1.74 px/mm by default, sensor in portrait for a
+    vertical overlap;
   - Gaussian PSF, part of it applied on the screen grid before resampling to prevent
     aliasing;
   - pixel integration by supersampling, shot + read noise, locked exposure, pedestal,
     vignetting, optional gamma;
-  - optional in-camera sharpening (Phase 2), to reproduce that failure mode: its halos can
+  - optional in-camera sharpening (a nuisance), to reproduce that failure mode: its halos can
     mimic double contours;
-  - Phase 2: output 16-bit linear luminance. Rec. 709 weights are applied right after the
-    projector light; RGB stays an option. This roughly halves render time and memory.
-- **Perturbation** (`perturb.py`):
+  - output 16-bit linear luminance. Rec. 709 weights are applied right after the projector
+    light; RGB stays an option. This roughly halves render time and memory.
+- **Perturbation** (`perturb.py`, `schedule.py`):
   - applied to A, B or both as a change of the actual homography, `h_actual = M(t) · h_cal`;
-  - kinds: shift (dx, dy mm), rotation (θ about a point), scale (s), keystone (h31, h32);
-  - schedules: `none`, `step(t0)`, `staircase(values, hold_s)`, `drift(rate per hour)`
-    (quantized to 0.02 px so render caches stay effective), `bump_then_hold`,
-    `oscillate(period)` (thermal).
+  - kinds: shift (`across` or `along` the moving projector's inner edges, or a vector),
+    rotation and scale (about its centre, its far corner, the overlap centre or a point),
+    keystone; each sized by the offset it causes (`magnitude_px` or `magnitude_mm`), or by
+    `deg` / `factor`;
+  - schedules: `none`, `step(t0)`, `staircase(levels, hold_s)`, `drift(rate per hour)`,
+    `ramp`, `bump_then_hold`, `oscillate(period)` (thermal). Continuous ones are quantized to
+    0.02 px so render caches stay effective. A schedule is required.
 - **Nuisances** (`nuisance.py`). These must never cause YES:
   - camera bump: changes the camera homography; the markers move with it;
   - lamp dimming of one projector (e.g. 15%, black level included);
   - room-light step;
   - occluder: a person-shaped silhouette crossing the screen for N frames, which may cover
     markers;
-  - flicker: per-projector brightness modulation, with optional banding when exposure is
-    not a multiple of the refresh period;
+  - flicker: per-projector brightness modulation, with rolling-shutter banding when exposure
+    is not a multiple of the modulation period (its phase changes from frame to frame);
   - in-camera sharpening left on by mistake;
-  - black-level uplift outside the overlap, if the blending software compensates.
+  - black-level uplift outside the overlap, if the blending software compensates (part of
+    the blending setup, `blend.black_uplift`).
 - **Ground truth per frame** (`truth.py`), written to `metadata.jsonl`:
   - true relative homography `h_rel = H_actB·H_calB⁻¹·H_calA·H_actA⁻¹`;
-  - true `offset_mm`: the largest displacement over the calibrated overlap ∩ content rect
-    (vertices, edge midpoints and an interior grid);
+  - true `offset_mm`: how far apart A and B now put the same content, the largest
+    |D_B(x) − D_A(x)| over the calibrated overlap ∩ content rect, with D_p = H_act,p·H_cal,p⁻¹
+    (symmetric in A and B; exact at the vertices for shift, rotation and scale, densely sampled
+    and refined for keystone);
   - `offset_px`, using the coarser projector pitch;
   - `aligned` (`offset_mm` < 0.02 mm);
   - perturbation and nuisance tags, content tag, timestamp, camera homography.
@@ -484,20 +499,24 @@ keep a `fast` quality preset for tests. Items marked "Phase 2" are still to buil
   - A `FrameSource` renders frame i on demand, seeded from the scenario seed
     (`SeedSequence(seed, spawn_key=(1, i))`), so any frame reproduces in any process.
   - The optical chain is linear in light, so a frame is a weighted sum of cached camera
-    images, one per light source (room light, bezel lamp, each projector's light for the
+    images, one per light source (room light, bezel light, each projector's light for the
     pictures shown and its current geometry). Each is rendered once and reused while its
-    inputs stay the same, so an unchanged frame costs only its noise (about 50 ms at demo
-    scale, against about 0.4 s for a new slide).
+    inputs stay the same, so an unchanged frame costs only its noise (about 25 ms at demo
+    scale in one process, against about 0.13 s for a new slide and 0.16 s for a video frame).
   - `make_dataset` always writes `scenario.yaml`, `setup.json` (exactly what the detector
     may read) and `metadata.jsonl`. Frames are written as 16-bit PNG only on request
     (`--frames all|sample|none`; ≈ 8 MB per mono frame).
-  - Reference mode: the source frames and the camera lag are part of the feed.
+  - Reference mode: the projectors show what was sent `reference.lag_s` earlier, and
+    `FrameSource.source(i)` lists the pictures sent before frame i's exposure ends.
+  - `scripts/check_dataset.py` checks a dataset's truth against what its scenario asked for,
+    with its own geometry code.
 
 Scenarios are YAML files in `scenarios/`. Adding a test idea must mean adding a YAML file,
-not code. Keys: `name`, `seed`, `quality`, `screen` (with `bezel` and its `markers`),
-`arrangement`, `projectors`, `blend`, `content` (a sequence), `camera` (with `color`,
-`exposure_s`, `phase_s`), `perturbation`, `nuisances`, `reference`, `duration_s`,
-`sample_every_s`, `trusted_window_s` (no perturbation may start before it), `extends` (deep-merge
+not code. Keys: `name`, `description`, `seed`, `quality`, `screen` (with `bezel` and its
+`markers`), `arrangement`, `projectors`, `blend`, `content` (a sequence), `camera` (with
+`color`, `exposure_s`, `phase_s`), `perturbation`, `nuisances`, `reference`, `duration_s`,
+`sample_every_s`, `trusted_window_s` (no perturbation or scheduled nuisance may start before
+it), `extends` (deep-merge
 a base file such as `_lecture_hall.yaml`) and `sweep` (dotted keys to lists of values; one
 dataset variant per combination). Sweep variants share the seed, so they are paired: same
 content and noise, and bit-identical frames before a perturbation's onset.
@@ -531,8 +550,9 @@ Reports: `results.jsonl`, `summary.csv`, PNG plots, `report.md` per run.
 
 ## 7. Scenario catalogue
 
-Create these YAML scenarios; each exists to answer a specific question. Defaults: ambient
-0.02, whole-screen camera, mono, `sample_every_s: 0.5`.
+These YAML scenarios exist in `scenarios/` (built in Phase 2), each to answer a specific
+question. They extend `_lecture_hall.yaml`: ambient 0.02, whole-screen camera, mono,
+`sample_every_s: 0.5`, nothing perturbed before the 600 s trusted window.
 
 | Scenario | Question it answers |
 | --- | --- |
@@ -544,12 +564,12 @@ Create these YAML scenarios; each exists to answer a specific question. Defaults
 | `rotation_sweep` | Small rotations of B about its centre and about a far corner. |
 | `scale_keystone` | Zoom and tilt perturbations; does the 6→8 param escalation work? |
 | `slow_drift` | 2 px over 2 hours; latency and timed safety check. |
-| `arrangements` | Same shift sweep across side-by-side, stacked, rotated, corner, different-size, large-overlap. |
-| `boundary_hidden` | Letterboxed photos and video + bright overlap: how often is the boundary unavailable, and does the overlap check catch what the boundary can't? |
+| `arrangements` | The shift step (0, 0.5, 1, 2, 4 px across) in side-by-side, stacked, rotated, corner, different-size and large-overlap arrangements. |
+| `boundary_hidden` | Letterboxed photos and video + bright overlap: how often is the boundary unavailable, and does the overlap check catch what the boundary can't? (The bars cross the overlap, so the boundary probably stays visible: `docs/findings.md`, 2026-10-07, 2b item 8.) |
 | `blank_band` | Nothing textured inside the overlap: the hotspot fit and the boundary must carry the check. |
 | `dark_film` | Dark scenes and fades: raster edges via black level. |
 | `repetition_limit` | Stripes of period P with shifts near P/2 and P: measure the aliasing limit (blind echo vs reference kernel). |
-| `camera_zoomed` | Camera on the overlap + control strips only vs whole screen: smallest detectable offset per signal. |
+| `camera_zoomed` | Camera on the overlap + control strips only vs whole screen: smallest detectable offset per signal (paired with `shift_sweep`'s across steps). |
 | `dark_room` | Ambient 0.0003 with and without bezel light: can the markers be found, and what does averaging buy? |
 
 ---
@@ -563,13 +583,13 @@ phase before the done conditions of the phases it depends on hold.
 |---|---|---|---|---|
 | 1 Scaffold + simulator core | pyproject, packages, config dataclass; screen, projector, blending setup, content, camera, render chain; `scripts/visualize.py` | A human sees a seamless image with a faint black-level raster around it | — | **done 2026-10-06**: seam 3.2e-6, raster edge within 0.0001 mm, 0.43 s per frame, 68 tests |
 | 2a Simulator datasets | bezel + markers, mono camera, arrangement presets, slide decks and held/flat/black sequences, perturbations + schedules, truth, FrameSource + caches, `make_dataset`, `check_dataset` | `shift_sweep` and `aligned_slides` generate twice with identical metadata and frame hashes; every frame's `offset_mm` within 1e-6 mm of the injected value; markers found 8/8 at ambient 0.02 with centre error < 0.2 px | 1 | **done 2026-10-07**: `--jobs 1` and `--jobs 4` runs byte-identical (34,800 frames each); offset error ≤ 8e-14 mm; marker centres p95 0.092 px, max 0.125 px; 45 ms per unchanged frame; 203 tests (7 slow) |
-| 2b Simulator library | video, textures (photo, dark film, stripes, letterbox, blank overlap), nuisances + flicker, black-level uplift, zoomed camera preset, reference feed, the rest of the §7 catalogue | every §7 scenario loads and renders its event frames; `aligned_video`, `aligned_nuisances`, `camera_zoomed` and `boundary_hidden` generate twice identically; the zoomed camera finds the 4 overlap markers with centre error < 0.2 px; each nuisance has a physics test, with truth still aligned; a video straddle equals the linear-light mix; source timestamps lag the display by `lag_s` | 2a | **done 2026-10-07**: `--jobs 4` and `--jobs 5` runs byte-identical (48,000 frames each); zoomed marker centres max 0.073 px; lamp, room light and bump exact; flicker moves frame to frame; 264 tests (19 slow) |
+| 2b Simulator library | video, textures (photo, dark film, stripes, letterbox, blank overlap), nuisances + flicker, black-level uplift, zoomed camera preset, reference feed, the rest of the §7 catalogue | every §7 scenario loads and renders its event frames; `aligned_video`, `aligned_nuisances`, `camera_zoomed` and `boundary_hidden` generate twice identically; the zoomed camera finds the 4 overlap markers with centre error < 0.2 px; each nuisance has a physics test, with truth still aligned; a video straddle equals the linear-light mix; source timestamps lag the display by `lag_s` | 2a | **done 2026-10-07**, refined 2026-10-08: `--jobs 4` and `--jobs 5` runs byte-identical (52,800 frames each); zoomed marker centres max 0.089 px; lamp, room light and bump exact; flicker moves frame to frame; 280 tests (20 slow) |
 | 3 Detector inputs + geometry | `inputs.py`, `rectify.py`, `polygon.py`, `blending.py`, `geometry.py`, `classify.py`, `results.py` | 200 random convex quad pairs (rotated, corner, nested): overlap, core tiles, controls and pieces valid; blend weights equal the simulator's within 1e-6; rectification error ≤ 0.05 mm; camera bump re-solved within 0.1 mm | 2a | |
 | 4 Boundary (primary) | `edges.py`, `field.py`, `boundary.py`; minimal `eval/feed.py`, `eval/metrics.py`, `scripts/run_detector.py` | On `shift_sweep` and `rotation_sweep`: offset within 0.2 mm of truth whenever available (spec: 0.5 px); `None`, not a wrong number, when edges are hidden; availability ≥ 95% on `aligned_slides` and `aligned_video` | 2a, 3 (`aligned_video`: 2b) | |
 | 5 Runner + decision | `baseline.py`, `pools.py`, `decision.py`, `runner.py`, JSONL output | `aligned_*` including nuisances: zero YES over ≥ 100 intervals; 4 px → YES within `YES_VOTES` intervals; 2 px → YES; 1 px → NO | 4 | |
 | 6a Echo | `echo.py`, developed on synthetic overlap data `O = a·S + b·warp(S)` | At 1.74 camera px/mm: 1.5–4 mm within 0.3 mm. At 0.87: ≥ 3 mm within 0.3 mm, and 1.5–2.5 mm flagged `unresolved`. Aligned twins: no detection over 50 seeds | 3 | |
 | 6b Hotspots + borders | `seam.py`, `borders.py`, synthetic first | Flat frames: 0.5 px across-shift within 0.2 px; along-shift → no offset; lamp −5% → warning with offset < 0.3 mm; aligned text crossing blocks → no offset | 3 | |
-| 6c Overlap check + fusion | `artifacts.py`, `fusion.py`, runner hook, safety check | `boundary_hidden` and `camera_zoomed`: 2 px caught by the overlap check where the boundary returns `None`; nuisances still produce no YES | 5, 6a, 6b | |
+| 6c Overlap check + fusion | `artifacts.py`, `fusion.py`, runner hook, safety check | `boundary_hidden` and `camera_zoomed`: 2 px caught by the overlap check where the boundary returns `None` (if Phase 4 finds the boundary visible there, as predicted, first add content whose overlap is never dark); nuisances still produce no YES | 5, 6a, 6b | |
 | 7 Reference mode | `source.py`, `kernel.py` | Whole-screen `shift_sweep`: kernel offset within 0.15 mm at 0.25–4 px; aligned < 0.1 mm; camera lag of 3 frames with cuts: wrong matches rejected | 6c | |
 | 8 Evaluation harness | `eval/sweep.py`, `eval/report.py`, `scripts/evaluate.py`, diagnostic images | One command evaluates every scenario and writes the detection curves, FPR, latency, availability, confusion, blind vs reference, and `report.md` | 6c | |
 | 9 Learning + stretch | threshold learning from simulated recalibrate presses (truth offsets above a hidden human threshold); grids of more than two projectors | Learned threshold within 10% of the hidden one (provisional) | 8 | |

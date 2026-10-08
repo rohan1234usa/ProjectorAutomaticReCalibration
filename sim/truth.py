@@ -35,7 +35,7 @@ from collections.abc import Mapping
 import numpy as np
 
 from sim.calibration import CalibrationSetup
-from sim.planar import apply_h, centroid, jacobian_det, points_in_convex
+from sim.planar import apply_h, centroid, local_scale, points_in_convex
 
 ALIGNED_MM = 0.02  # offsets below this count as aligned (float noise, sub-quantum drift)
 
@@ -46,7 +46,7 @@ def coarse_pitch_mm(setup: CalibrationSetup) -> float:
     pitches = []
     for name in setup.names:
         u, v = apply_h(np.linalg.inv(setup.h_cal[name]), c)
-        pitches.append(float(np.sqrt(abs(jacobian_det(setup.h_cal[name], u, v)))))
+        pitches.append(float(local_scale(setup.h_cal[name], u, v)))
     return max(pitches)
 
 
@@ -95,7 +95,7 @@ def max_separation(d_a: np.ndarray, d_b: np.ndarray, poly: np.ndarray) -> float:
     f = separation_mm(d_a, d_b, pts)
     best = float(f.max())
     # Local refinement from the best samples, along compass directions and along P's edges.
-    edge_dirs = [q - p for p, q in zip(poly, np.roll(poly, -1, axis=0))]
+    edge_dirs = [q - p for p, q in zip(poly, np.roll(poly, -1, axis=0), strict=True)]
     dirs = [np.array([np.cos(a), np.sin(a)]) for a in np.linspace(0, 2 * np.pi, 8, endpoint=False)]
     dirs += [s * e / np.hypot(*e) for e in edge_dirs for s in (1.0, -1.0)]
     for start in pts[np.argsort(f)[-3:]]:

@@ -64,10 +64,21 @@ def test_a_person_walking_past_darkens_the_screen_and_hides_markers():
     assert state.occluder and not src.state(1).occluder
     torso = _pixel(src, 300.0, 300.0 - 0.6 * 260)
     ratio = src.expected(i)[torso] / src.expected(1)[torso]
-    assert 0.2 < ratio < 0.5  # reflectance 0.3 against the screen's 0.9
+    assert ratio == pytest.approx(0.3 / 0.9, rel=1e-4)  # reflectance 0.3 against the screen's 0.9, same light
     visible = src.truth(i)["truth"]["markers_visible"]
     assert 6 in src.truth(1)["truth"]["markers_visible"] and 6 not in visible  # its legs hide the bottom pair
     assert src.truth(i)["truth"]["aligned"]
+
+
+def test_people_passing_together_keep_their_own_reflectance():
+    walk = {"type": "occluder", "duration_s": 1, "height_mm": 260, "floor_mm": 300}
+    src = _scenario([{**walk, "t0_s": 2, "direction": "right"},
+                     {**walk, "t0_s": 2.25, "direction": "left", "reflectance": 0.6}])
+    i = 5  # t = 2.5 s: one person centred at x = 300 mm, the other at 486.4 mm
+    assert [r for r, _ in src.state(i).people] == [0.3, 0.6]
+    for x, reflectance in ((300.0, 0.3), (486.4, 0.6)):
+        torso = _pixel(src, x, 300.0 - 0.6 * 260)
+        assert src.expected(i)[torso] / src.expected(1)[torso] == pytest.approx(reflectance / 0.9, rel=1e-4)
 
 
 def test_flicker_cancels_when_the_exposure_spans_whole_periods():
@@ -99,13 +110,23 @@ def test_flicker_scales_its_projectors_rows():
     assert np.ptp(ratio) > 1e-3 and abs(ratio.mean() - 1.0) < 0.02
 
 
-def test_sharpening_adds_halos_but_keeps_the_level():
+def test_sharpening_rings_at_edges_but_keeps_the_level():
+    """Unsharp masking overshoots on both sides of an edge: the halo that can mimic a double contour."""
     plain = _scenario([])
     sharp = _scenario([{"type": "sharpening", "amount": 0.8, "sigma_px": 1.0}])
-    a = plain.camera.decode(plain.frame(2))
-    b = sharp.camera.decode(sharp.frame(2))
-    assert abs(b.mean() - a.mean()) < 0.01 * a.mean()
-    assert np.abs(np.diff(b, axis=1)).mean() > 1.3 * np.abs(np.diff(a, axis=1)).mean()
+    sharpening = sharp.scenario.nuisances.sharpening
+    expected = plain.expected(2)  # noiseless
+    row, col = _pixel(plain, 80.0, 130.0)  # projector A's left raster edge: lit content against the unlit screen
+    line, rung = expected[row, col - 12 : col + 13], sharpening.apply(expected)[row, col - 12 : col + 13]
+    step = line.max() - line.min()
+    # A bright fringe on the lit side and a dark one on the unlit side, each 2.2% of the step here.
+    assert rung.max() > line.max() + 0.01 * step and rung.min() < line.min() - 0.01 * step
+    assert rung[[0, -1]] == pytest.approx(line[[0, -1]], rel=1e-5)  # flat away from the edge: level kept
+    # In a frame it acts on the noisy electrons, before they are encoded.
+    a, b = plain.camera.decode(plain.frame(2)), sharp.camera.decode(sharp.frame(2))
+    want = sharpening.apply(a)
+    inside = (want > 0) & (want < 0.9 * plain.camera.full_well_e)  # not clipped by the encoding
+    assert np.abs(b - want)[inside].max() <= 2.0 / plain.camera.gain_dn_per_e
 
 
 def test_every_nuisance_at_once_leaves_the_projectors_aligned():

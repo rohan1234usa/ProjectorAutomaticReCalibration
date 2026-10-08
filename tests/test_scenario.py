@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from sim.scenario import load_scenario, load_scenarios, scenario_from_dict
+from sim.sweep import variant_name
 from tests.scenes import TINY_SCENARIO
 
 REPO = Path(__file__).resolve().parents[1]
@@ -80,6 +81,13 @@ def test_extends_and_sweep_expand_into_paired_variants(tmp_path):
     assert {v.name for v in variants} == {"shifts"} and {v.scene.seed for v in variants} == {TINY_SCENARIO["seed"]}
     assert "sweep" not in variants[1].data and "extends" not in variants[1].data
     assert variants[3].data["perturbation"]["b"]["magnitude_px"] == 1
+
+
+def test_sweep_values_that_are_lists_of_mappings_are_named_by_their_type():
+    nuisances = [{"projector": "b", "type": "lamp", "gain": 0.85}, {"type": "occluder", "t0_s": 900}]
+    assert variant_name([("nuisances", nuisances)]) == "nuisances=lamp+occluder"
+    assert variant_name([("perturbation.b", [{"magnitude_px": 2, "kind": "shift"}])]) == "b=shift"
+    assert variant_name([("items", [{"value": 0.5}])]) == "items=custom"
 
 
 @pytest.mark.parametrize(

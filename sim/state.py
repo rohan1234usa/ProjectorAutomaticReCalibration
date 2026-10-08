@@ -38,8 +38,13 @@ class FrameState:
     ambient: float  # room light
     gains: dict[str, float]  # each projector's lamp, relative to calibration
     camera_key: tuple[float, ...]  # each camera bump's (quantized) strength; all zero = undisturbed
-    occluder: tuple[np.ndarray, ...]  # silhouette polygons in screen mm; empty when nobody passes
-    occluder_reflectance: float
+    people: tuple[tuple[float, tuple[np.ndarray, ...]], ...]  # each person passing: (reflectance,
+    # silhouette polygons in screen mm), in the order listed (later ones in front); empty when nobody passes
+
+    @property
+    def occluder(self) -> tuple[np.ndarray, ...]:
+        """Every silhouette polygon in the frame, of everyone passing."""
+        return tuple(polygon for _, polygons in self.people for polygon in polygons)
 
 
 def frame_state(scenario: Scenario, i: int) -> FrameState:
@@ -55,13 +60,11 @@ def frame_state(scenario: Scenario, i: int) -> FrameState:
     for lamp in nz.lamps:
         gains[lamp.projector] *= lamp.value(t)
     camera_key = tuple(round(b.schedule.value(t) / BUMP_QUANTUM) * BUMP_QUANTUM for b in nz.bumps)
-    outline: tuple[np.ndarray, ...] = ()
-    reflectance = 0.0
+    people = []
     for person in nz.occluders:
         polygons = person.outline(t, scenario.scene.screen.size_mm[0])
         if polygons is not None:
-            outline += tuple(polygons)
-            reflectance = person.reflectance
+            people.append((person.reflectance, tuple(polygons)))
     return FrameState(
         index=i,
         t=t,
@@ -72,6 +75,5 @@ def frame_state(scenario: Scenario, i: int) -> FrameState:
         ambient=ambient,
         gains=gains,
         camera_key=camera_key,
-        occluder=outline,
-        occluder_reflectance=reflectance,
+        people=tuple(people),
     )

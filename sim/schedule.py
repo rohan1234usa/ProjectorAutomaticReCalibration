@@ -6,8 +6,8 @@ what real installations do:
 
   none            m = 0: nothing happens.
   step            0 before t0, 1 from t0 on: a projector bumped once, a light switched.
-  staircase       levels[k] for t in [t0 + k hold, t0 + (k+1) hold), the last level held after:
-                  a slow walk through known offsets.
+  staircase       levels[k] for t in [t0 + k hold_s, t0 + (k+1) hold_s), the last level held
+                  after: a slow walk through known offsets.
   drift           rate_per_h x hours since t0: thermal creep or a sagging mount.
   ramp            0 to 1 linearly over duration_s from t0, then 1: a lamp dimming gradually.
   bump_then_hold  jumps to `peak` at t0, then relaxes to `hold` with time constant settle_s:
@@ -47,13 +47,13 @@ class Schedule:
     kind: str = "none"
     t0: Fraction = Fraction(0)
     levels: tuple[float, ...] = ()
-    hold: Fraction = Fraction(0)  # staircase step length
-    rate_per_h: float = 0.0
-    duration: Fraction = Fraction(0)  # ramp length
-    peak: float = 1.0
-    hold_value: float = 1.0
-    settle_s: float = 0.0
-    period: Fraction = Fraction(0)
+    step: Fraction = Fraction(0)  # staircase: how long each level lasts (YAML hold_s)
+    rate_per_h: float = 0.0  # drift
+    duration: Fraction = Fraction(0)  # ramp length (YAML duration_s)
+    peak: float = 1.0  # bump_then_hold: the jump at t0
+    settled: float = 1.0  # bump_then_hold: where it settles (YAML hold)
+    settle_s: float = 0.0  # bump_then_hold: time constant of the settling
+    period: Fraction = Fraction(0)  # oscillate (YAML period_s)
 
     @property
     def continuous(self) -> bool:
@@ -61,7 +61,11 @@ class Schedule:
 
     @property
     def onset(self) -> Fraction | None:
-        """When the multiplier first leaves 0 (None if it never does)."""
+        """The schedule's start t0 (None for ``none``).
+
+        The multiplier is 0 before t0; it may stay 0 a little longer (a staircase whose first level
+        is 0, a drift that has not yet moved a whole quantum), so t0 is a conservative onset.
+        """
         return None if self.kind == "none" else self.t0
 
     def value(self, t: Fraction) -> float:
@@ -71,14 +75,14 @@ class Schedule:
         if self.kind == "step":
             return 1.0
         if self.kind == "staircase":
-            return float(self.levels[min(int(dt // self.hold), len(self.levels) - 1)])
+            return float(self.levels[min(int(dt // self.step), len(self.levels) - 1)])
         if self.kind == "drift":
             return self.rate_per_h * float(dt) / 3600.0
         if self.kind == "ramp":
             return 1.0 if dt >= self.duration else float(dt / self.duration)
         if self.kind == "bump_then_hold":
             decay = math.exp(-float(dt) / self.settle_s) if self.settle_s > 0 else 0.0
-            return self.hold_value + (self.peak - self.hold_value) * decay
+            return self.settled + (self.peak - self.settled) * decay
         return 0.5 * (1.0 - math.cos(2.0 * math.pi * float(dt / self.period)))  # oscillate
 
 
@@ -97,10 +101,10 @@ def from_config(cfg: Mapping[str, Any] | str | None, where: str) -> Schedule:
     t0 = seconds(rest.get("t0_s", 0), f"{where}.t0_s")
     if kind == "staircase":
         levels = tuple(num(v, f"{where}.levels") for v in rest["levels"])
-        hold = seconds(rest["hold_s"], f"{where}.hold_s")
-        if not levels or hold <= 0:
+        step = seconds(rest["hold_s"], f"{where}.hold_s")
+        if not levels or step <= 0:
             raise ValueError(f"{where}: staircase needs levels and hold_s > 0")
-        return Schedule(kind, t0, levels=levels, hold=hold)
+        return Schedule(kind, t0, levels=levels, step=step)
     if kind == "drift":
         return Schedule(kind, t0, rate_per_h=num(rest["rate_per_h"], f"{where}.rate_per_h"))
     if kind == "ramp":
@@ -113,7 +117,7 @@ def from_config(cfg: Mapping[str, Any] | str | None, where: str) -> Schedule:
         if settle < 0:
             raise ValueError(f"{where}: settle_s must be >= 0")
         return Schedule(kind, t0, peak=num(rest.get("peak", 1.0), f"{where}.peak"),
-                        hold_value=num(rest.get("hold", 1.0), f"{where}.hold"), settle_s=settle)
+                        settled=num(rest.get("hold", 1.0), f"{where}.hold"), settle_s=settle)
     if kind == "oscillate":
         period = seconds(rest["period_s"], f"{where}.period_s")
         if period <= 0:

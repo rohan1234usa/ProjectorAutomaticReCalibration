@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
 
@@ -67,7 +67,6 @@ class Perturbation:
     pivot: np.ndarray  # mm
     schedule: Schedule
     quantum: float | None  # step of m for continuous schedules
-    spec: dict[str, Any] = field(default_factory=dict)  # as written, for the dataset's tags
 
     def multiplier(self, t: Fraction) -> float:
         m = self.schedule.value(t)
@@ -110,7 +109,7 @@ def h_actual(
 ) -> dict[str, np.ndarray]:
     """Actual geometry of each projector: its perturbations composed in list order, then h_cal."""
     out = {n: np.asarray(setup.h_cal[n], dtype=np.float64) for n in setup.names}
-    for p, m in zip(perturbations, multipliers):
+    for p, m in zip(perturbations, multipliers, strict=True):
         if m != 0.0:
             out[p.projector] = p.matrix(m) @ out[p.projector]
     return out
@@ -120,7 +119,7 @@ def across(setup: CalibrationSetup, name: str) -> np.ndarray:
     """Unit normal of projector `name`'s inner edges, pointing away from its partner."""
     inner = setup.inner_edges()[name]
     if not inner:
-        raise ValueError(f"perturbation: projector {name} has no inner edge, so across/along are undefined; give a vector")
+        raise ValueError(f"perturbation: projector {name} has no inner edge, so across/along are undefined; set direction: [x, y]")
     inside = box_mm(setup.h_cal[name], setup.resolution[name]).mean(axis=0)
     total, length = np.zeros(2), 0.0
     for p, q in inner:
@@ -132,11 +131,12 @@ def across(setup: CalibrationSetup, name: str) -> np.ndarray:
         length += float(np.hypot(*e))
     if np.hypot(*total) < 1e-6 * length:  # e.g. a box nested inside its partner: no single direction
         raise ValueError(f"perturbation: projector {name}'s inner edges face every way, so across/along "
-                         "are undefined; give a vector")
+                         "are undefined; set direction: [x, y]")
     return -total / np.hypot(*total)
 
 
-def pivot_point(setup: CalibrationSetup, name: str, spec: Any) -> np.ndarray:
+def pivot_point(setup: CalibrationSetup, name: str, spec: Any, where: str = "perturbation.pivot") -> np.ndarray:
+    """The fixed point of a rotation, scale or keystone: a named point of the setup, or [x, y] in mm."""
     if spec == "centre":
         w, h = setup.resolution[name]
         return apply_h(setup.h_cal[name], np.array([(w - 1) / 2, (h - 1) / 2]))
@@ -146,7 +146,7 @@ def pivot_point(setup: CalibrationSetup, name: str, spec: Any) -> np.ndarray:
         corners = box_mm(setup.h_cal[name], setup.resolution[name])  # TL, TR, BR, BL
         d = np.hypot(*(corners - centroid(setup.overlap())).T)
         return corners[int(np.nonzero(d >= d.max() - 1e-9)[0][0])]
-    return np.array(pair(spec, "perturbation.pivot"))
+    return np.array(pair(spec, where))
 
 
 def _unit(v: Any, where: str) -> np.ndarray:
@@ -209,7 +209,7 @@ def _one(name: str, spec: Mapping[str, Any], setup: CalibrationSetup, pitch: flo
         parameter = target_mm
         unit_offset = abs(parameter)
     else:
-        pivot = pivot_point(setup, name, spec.get("pivot", "centre"))
+        pivot = pivot_point(setup, name, spec.get("pivot", "centre"), f"{where}.pivot")
         r = float(np.hypot(*(poly - pivot).T).max())  # farthest overlap vertex from the pivot
         if kind == "rotation":
             if size_key == "deg":
@@ -234,7 +234,7 @@ def _one(name: str, spec: Mapping[str, Any], setup: CalibrationSetup, pitch: flo
     quantum = None
     if schedule.continuous and unit_offset > 0:
         quantum = QUANTUM_PX * pitch / unit_offset  # the step of m that moves the offset by 0.02 px
-    return Perturbation(name, kind, parameter, vector, pivot, schedule, quantum, dict(spec))
+    return Perturbation(name, kind, parameter, vector, pivot, schedule, quantum)
 
 
 def from_config(cfg: Any, setup: CalibrationSetup) -> tuple[Perturbation, ...]:

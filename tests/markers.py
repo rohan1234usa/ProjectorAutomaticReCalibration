@@ -28,14 +28,18 @@ def to_8bit(electrons: np.ndarray, paper_e: float) -> np.ndarray:
 
 
 def detect(image8: np.ndarray, subpix: bool = False) -> dict[int, np.ndarray]:
-    """ArUco DICT_4X4_50 corners (TL, TR, BR, BL in the marker's frame) by id."""
+    """ArUco DICT_4X4_50 corners (TL, TR, BR, BL in the marker's frame) by id.
+
+    `subpix` turns on ArUco's own sub-pixel corner refinement, kept to show why
+    :func:`refined_corners` exists (tests/test_fiducials.py compares the two).
+    """
     params = cv2.aruco.DetectorParameters()
     params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX if subpix else cv2.aruco.CORNER_REFINE_NONE
     detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), params)
     corners, ids, _ = detector.detectMarkers(image8)
     if ids is None:
         return {}
-    return {int(i): c.reshape(4, 2).astype(np.float64) for i, c in zip(ids.ravel(), corners)}
+    return {int(i): c.reshape(4, 2).astype(np.float64) for i, c in zip(ids.ravel(), corners, strict=True)}
 
 
 def _bilinear(img: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -54,7 +58,7 @@ def _intersect(p: np.ndarray, d: np.ndarray, q: np.ndarray, e: np.ndarray) -> np
     return p + s * d
 
 
-def edge_lines(electrons: np.ndarray, corners: np.ndarray, reach_px: float = 4.0) -> np.ndarray:
+def refined_corners(electrons: np.ndarray, corners: np.ndarray, reach_px: float = 4.0) -> np.ndarray:
     """Refined corners of a marker's black square from straight-line fits to its four outer edges."""
     img = electrons.astype(np.float64)
     centre = corners.mean(axis=0)
@@ -75,7 +79,7 @@ def edge_lines(electrons: np.ndarray, corners: np.ndarray, reach_px: float = 4.0
         inside, outside = prof[:, tau < -reach_px / 2].mean(axis=1), prof[:, tau > reach_px / 2].mean(axis=1)
         half = (inside + outside) / 2
         edge = []
-        for row, level in zip(prof, half):
+        for row, level in zip(prof, half, strict=True):
             i = np.nonzero((row[:-1] < level) & (row[1:] >= level))[0]
             if len(i) != 1:
                 edge.append(np.nan)  # noise made several crossings: skip this profile

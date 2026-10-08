@@ -48,10 +48,11 @@ uv run python -m scripts.visualize scenarios/aligned_side_by_side.yaml --out out
 
 The last command writes `out/phase1/view.png` with two panels:
 - the simulated camera frame, shown with a log display so the 1/1500 black level is visible;
-- the same frame with each projector's footprint, their overlap and the markers drawn on it.
+- the same frame with each projector's footprint, their overlap and, with a bezel, the markers
+  drawn on it.
 
 It also prints the render time and the light levels it measured. `--variant` and `--frame`
-pick any frame of any scenario.
+pick any frame of any scenario, written as `view_<variant>_frame<i>.png`.
 
 Generate a dataset, then check its ground truth against what was injected:
 
@@ -64,8 +65,8 @@ uv run python -m scripts.check_dataset out/shift_sweep
 ```
 
 `--frames none` writes the ground truth alone in seconds. Any frame can be re-rendered from a
-dataset's `scenario.yaml`, and its stored hash proves it is the same frame. The slow,
-demo-scale tests run with `uv run pytest -m slow`.
+dataset's `scenario.yaml`; with `--frames sample` or `all`, its stored hash proves it is the
+same frame. The slow, demo-scale tests run with `uv run pytest -m slow`.
 
 ## Layout
 

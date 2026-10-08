@@ -38,7 +38,7 @@ from sim.pictures import ContentGeometry, Item
 
 ContentKey = tuple[int, int, int]  # (item, loop, picture index)
 Segments = tuple[tuple[ContentKey, Fraction], ...]
-_EPSILON = Fraction(1, 10**9)  # far shorter than any picture: steps just before a picture's start
+EPSILON = Fraction(1, 10**9)  # far shorter than any picture: steps just before a picture's start
 
 
 @dataclass(eq=False)
@@ -107,7 +107,7 @@ class Sequence:
         while len(out) < count and now >= 0:
             key, start, _ = self._locate(now)
             out.append((max(start, Fraction(0)), key))
-            now = start - _EPSILON
+            now = start - EPSILON
         return out
 
     def same_shot(self, a: ContentKey, b: ContentKey) -> bool:
@@ -153,10 +153,7 @@ def from_config(cfg: Any, seed: int, size: tuple[int, int], duration: Fraction, 
         if not isinstance(loop, bool):
             raise ValueError("content.loop: expected true or false")
     elif isinstance(cfg, Mapping):
-        picture = dict(cfg)
-        if picture.get("type") == "slide":  # Phase 1 spelling of a held slide
-            picture["type"] = "held"
-        items_cfg, loop = [picture], False
+        items_cfg, loop = [dict(cfg)], False
     else:
         items_cfg, loop = cfg, False
     if not isinstance(items_cfg, list) or not items_cfg:

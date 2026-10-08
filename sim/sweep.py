@@ -12,11 +12,12 @@ A ``sweep`` maps dotted keys to lists of values, e.g.
       perturbation.b.magnitude_px: [0, 0.25, 0.5]
       perturbation.b.direction: [across, along]
 
-and expands to the Cartesian product, in the order written: here six variants named like
+and expands to the Cartesian product, in the order written: here six combinations named like
 ``magnitude_px=0.25__direction=across``. Values may be whole mappings (a whole ``arrangement``);
 a list index is a number in the dotted key (``content.items.0.density``). Variants that are the
-same scenario in effect (by a caller-supplied canonical form, e.g. any zero-size shift) are kept
-once. Variants inherit the scenario's seed, so they are paired: same content, same noise.
+same scenario in effect (by a caller-supplied canonical form) are kept once: loading this
+example gives five variants, because a zero-size shift across and one along are the same
+aligned run. Variants inherit the scenario's seed, so they are paired: same content, same noise.
 """
 
 from __future__ import annotations
@@ -82,6 +83,9 @@ def set_dotted(data: dict[str, Any], key: str, value: Any) -> None:
         node[last] = copy.deepcopy(value)
 
 
+_NAME_KEYS = ("type", "kind", "preset")  # what a mapping in a list is called by, first found wins
+
+
 def _label(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -92,8 +96,8 @@ def _label(value: Any) -> str:
         return "-".join(parts) or "custom"
     if isinstance(value, (list, tuple)):
         if value and all(isinstance(v, Mapping) for v in value):  # e.g. a list of nuisances: their types
-            firsts = [_label(next(iter(v.values()))) for v in value]
-            return "+".join(dict.fromkeys(firsts))
+            names = [next((_label(v[k]) for k in _NAME_KEYS if k in v), "custom") for v in value]
+            return "+".join(dict.fromkeys(names))
         return "-".join(_label(v) for v in value)
     return str(value)
 
@@ -117,15 +121,15 @@ def expand(
     out, seen, names = [], set(), set()
     for values in itertools.product(*(sweep[k] for k in keys)):
         variant = copy.deepcopy(data)
-        for key, value in zip(keys, values):
+        for key, value in zip(keys, values, strict=True):
             set_dotted(variant, key, value)
         signature = json.dumps(canonical(variant) if canonical else variant, sort_keys=True, default=str)
         if signature in seen:
             continue
         seen.add(signature)
-        name, n = variant_name(list(zip(keys, values))), 2
+        name, n = variant_name(list(zip(keys, values, strict=True))), 2
         while name in names:  # distinct variants whose labels coincide
-            name, n = f"{variant_name(list(zip(keys, values)))}_{n}", n + 1
+            name, n = f"{variant_name(list(zip(keys, values, strict=True)))}_{n}", n + 1
         names.add(name)
         out.append((name, variant))
     return out

@@ -10,7 +10,7 @@ from sim.planar import rect_polygon
 from sim.sequence import from_config as _from_config
 
 SIZE = (320, 90)
-GEOMETRY = ContentGeometry(px_per_mm=1.0, overlap_px=rect_polygon(140.0, 0.0, 180.0, 90.0))
+GEOMETRY = ContentGeometry(px_per_mm=1.0, overlap_px=rect_polygon(140.0, 0.0, 180.0, 90.0), gamma=2.2)
 
 
 def from_config(cfg, seed, size, duration):
@@ -54,7 +54,7 @@ def test_exposure_straddling_a_change_is_split_exactly():
 
 
 def test_a_single_picture_mapping_is_held_for_the_whole_run():
-    seq = from_config({"type": "slide", "border_frac": 0.1}, seed=1, size=SIZE, duration=Fraction(100))
+    seq = from_config({"type": "held", "border_frac": 0.1}, seed=1, size=SIZE, duration=Fraction(100))
     assert {seq.segments(Fraction(t), Fraction(1, 30))[0][0] for t in (0, 50, 99)} == {(0, 0, 0)}
     assert seq.tag((0, 0, 0)) == "held_medium"
     assert seq.image((0, 0, 0))[:5].max() == 0.0  # the black border

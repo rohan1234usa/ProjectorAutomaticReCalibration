@@ -13,7 +13,7 @@ from sim.textures import blank_inside, letterbox, photo, stripes
 from sim.video import Clip, VideoFrames
 
 SIZE = (400, 120)
-GEOMETRY = ContentGeometry(px_per_mm=0.96, overlap_px=rect_polygon(170.0, -0.5, 230.0, 119.5))
+GEOMETRY = ContentGeometry(px_per_mm=0.96, overlap_px=rect_polygon(170.0, -0.5, 230.0, 119.5), gamma=2.2)
 
 
 def _rng(k: int = 0) -> np.random.Generator:
@@ -88,6 +88,12 @@ def test_reference_feed_lists_what_was_sent_newest_first():
     "cfg, message",
     [
         ({"type": "video", "duration_s": 1.01, "fps": 30}, "whole number of frames"),
+        ({"type": "video", "duration_s": 1, "fps": 0}, "fps: must be positive"),
+        ({"type": "video", "duration_s": 1, "fps": "thirty"}, "frame rate"),
+        ({"type": "video", "duration_s": 1, "cut_s": None, "fade_s": 0.5}, "fade at their cuts"),
+        ({"type": "video", "duration_s": 1, "cut_s": 0}, "cut_s: must be positive"),
+        ({"type": "photo", "hold_s": 1, "border_frac": 0.5}, "border_frac"),
+        ({"type": "slide", "hold_s": 1}, "must be one of"),
         ({"type": "stripes", "period_mm": 1.0, "hold_s": 1}, "two content pixels"),
         ({"type": "photo", "hold_s": 1, "letterbox": 0.6}, "letterbox"),
         ({"type": "video", "duration_s": 1, "style": "sepia"}, "must be one of"),
@@ -122,12 +128,32 @@ def test_blank_overlap_leaves_the_border_and_bars_black():
     assert np.allclose(img[20:100, 175:225], 0.5)  # flat inside the overlap, within the picture
 
 
+def test_reference_feed_runs_ahead_of_the_display_by_lag_s():
+    """The projectors show what was sent lag_s earlier; the feed is timestamped on the sending clock."""
+    from sim.frames import FrameSource
+    from sim.scenario import scenario_from_dict
+    from tests.scenes import TINY_SCENARIO
+
+    cfg = {**TINY_SCENARIO, "duration_s": 4, "camera": {**TINY_SCENARIO["camera"], "phase_s": 0.01},
+           "reference": {"available": True, "lag_s": 0.1},
+           "content": {"items": [{"type": "video", "duration_s": 4, "fps": 30, "cut_s": 2}]}}
+    source = FrameSource(scenario_from_dict(cfg))
+    # Frame 2 is exposed over [1.01, 1.0433) s and shows what was sent over [0.91, 0.9433) s.
+    shown = [key for key, _ in source.state(2).segments]
+    assert [k[2] for k in shown] == [27, 28]  # video frames sent at 0.9 s and 0.933 s
+    feed = source.source(2)
+    sent = {key: t for t, key, _ in feed}
+    assert [sent[k] for k in shown] == pytest.approx([27 / 30, 28 / 30])
+    assert feed[0][0] == pytest.approx(31 / 30)  # the newest was sent during the exposure, not yet shown
+
+
 def test_reference_feed_holds_every_picture_the_exposure_shows():
     from sim.frames import FrameSource
     from sim.scenario import scenario_from_dict
     from tests.scenes import TINY_SCENARIO
 
     cfg = {**TINY_SCENARIO, "duration_s": 4, "camera": {**TINY_SCENARIO["camera"], "phase_s": 0.01},
+           "reference": {"available": True},
            "content": {"items": [{"type": "video", "duration_s": 4, "fps": 30, "cut_s": 2}]}}
     source = FrameSource(scenario_from_dict(cfg))
     shown = [key for key, _ in source.state(3).segments]

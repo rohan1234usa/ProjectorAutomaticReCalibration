@@ -153,7 +153,8 @@ def from_config(cfg: Any, projectors: tuple[str, ...], screen_size_mm: tuple[flo
         kind = choice(item.get("type"), _TYPES, f"{where}.type")
         rest = {k: v for k, v in item.items() if k != "type"}
         if kind in ("camera_bump", "lamp", "room_light"):
-            require(rest, {"schedule"}, where)  # {type: none} switches one off; forgetting must not
+            # {type: none} switches one off on purpose; a forgotten schedule must not do so silently
+            require(rest, {"schedule"}, where)
         if kind == "camera_bump":
             check_keys(rest, {"shift_px", "rotation_deg", "schedule"}, where)
             found[kind].append(CameraBump(pair(rest.get("shift_px", [0, 0]), f"{where}.shift_px"),

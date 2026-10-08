@@ -131,5 +131,5 @@ def test_across_is_undefined_for_a_nested_projector():
     corners = {"a": rect_polygon(200, 100, 3800, 2125), "b": rect_polygon(1000, 600, 2000, 1162.5)}
     h = {n: homography_from_points(raster_corners(res[n]), corners[n]) for n in res}
     nested = CalibrationSetup(h_cal=h, resolution=res, content_rect_mm=(200.0, 100.0, 3800.0, 2125.0))
-    with pytest.raises(ValueError, match="give a vector"):
+    with pytest.raises(ValueError, match=r"set direction: \[x, y\]"):
         across(nested, "b")

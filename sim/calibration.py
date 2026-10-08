@@ -10,8 +10,9 @@ content at the screen point where that pixel lands (geometric correction), then 
 that pixel's blend weight (photometric blending). Nothing changes until the next calibration.
 So when a projector physically drifts, its framebuffer is still made for the old geometry and
 the picture lands in the wrong place. That mismatch is exactly what the detector looks for.
-Besides camera frames, this information is the one thing the detector may read. The harness
-hands it over as plain data, since the detector never imports the simulator.
+Besides camera frames, this information is what the detector may read, together with the marker
+layout and the locked camera settings (and, in reference mode, the source frames). The harness
+hands it over as plain data (``setup.json``), since the detector never imports the simulator.
 
 Blend rule. Where both projectors cover a point, their weights must add up to 1 in linear
 light, so the sum is seamless. Each projector must also fade to exactly 0 at each of its edges
@@ -44,7 +45,7 @@ from sim.planar import (
     clip_convex,
     distance_to_segments,
     edges,
-    jacobian_det,
+    local_scale,
     points_in_convex,
     raster_corners,
     rect_polygon,
@@ -67,8 +68,8 @@ class CalibrationSetup:
     black_uplift: bool = False  # lift each projector's single-coverage black to the overlap's double black
 
     def __post_init__(self) -> None:
-        if len(self.h_cal) != 2 or set(self.h_cal) != set(self.resolution):
-            raise ValueError("a calibration setup needs exactly two projectors with resolutions")
+        if set(self.h_cal) != {"a", "b"} or set(self.resolution) != {"a", "b"}:
+            raise ValueError("a calibration setup needs exactly two projectors, a and b, with resolutions")
         if self.blend_shape not in RAMPS:
             raise ValueError(f"blend_shape must be one of {sorted(RAMPS)}, got {self.blend_shape!r}")
         x0, y0, x1, y1 = self.content_rect_mm
@@ -77,16 +78,18 @@ class CalibrationSetup:
 
     @property
     def names(self) -> tuple[str, str]:
-        a, b = self.h_cal
-        return a, b
+        """Always ("a", "b"): offsets and h_rel are B relative to A, whatever order the maps came in."""
+        return "a", "b"
 
     def box_mm(self, name: str) -> np.ndarray:
         return box_mm(self.h_cal[name], self.resolution[name])
 
-    def pixel_pitch_mm(self, name: str) -> float:
-        """Side of the projector's smallest pixel footprint on the screen."""
+    def finest_pitch_mm(self, name: str | None = None) -> float:
+        """Side of the smallest pixel footprint on the screen: of projector `name`, or of both."""
+        if name is None:
+            return min(self.finest_pitch_mm(n) for n in self.names)
         u, v = raster_corners(self.resolution[name]).T
-        return float(np.sqrt(np.abs(jacobian_det(self.h_cal[name], u, v)).min()))
+        return float(local_scale(self.h_cal[name], u, v).min())
 
     def overlap(self) -> np.ndarray:
         """The calibrated overlap inside the content: box A ∩ box B ∩ content rect (convex polygon)."""
@@ -155,7 +158,7 @@ class CalibrationSetup:
 
     def content_size(self) -> tuple[int, int]:
         """Native content resolution: the content rect sampled at the finest projector pitch."""
-        pitch = min(self.pixel_pitch_mm(n) for n in self.names)
+        pitch = self.finest_pitch_mm()
         x0, y0, x1, y1 = self.content_rect_mm
         return max(1, round((x1 - x0) / pitch)), max(1, round((y1 - y0) / pitch))
 

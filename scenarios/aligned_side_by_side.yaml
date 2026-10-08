@@ -25,7 +25,7 @@ blend:
   shape: cosine
 
 content:
-  type: slide
+  type: held             # one slide for the whole run
   border_frac: 0.05        # black border inside the content rect: the black-level raster shows around the picture
 
 camera:

@@ -84,3 +84,20 @@ def test_mono_is_the_rec709_luminance_of_rgb():
     got = FrameSource(mono).expected(0)
     assert got.shape == rgb.shape[:2]
     assert np.allclose(got, luminance, rtol=1e-5, atol=1e-3)
+
+
+def test_components_sum_to_one_pass():
+    """Light adds linearly: the per-source images (room, bezel light, each projector, drawn with shared
+    scratch buffers) sum to one camera pass over the total radiance, to float32 rounding."""
+    cfg = copy.deepcopy(TINY_BEZEL)
+    cfg["screen"]["bezel"]["light"] = 0.01
+    cfg.update(duration_s=1, content={"items": [{"type": "deck", "slides": 2, "hold_s": 0.5, "border_frac": 0.1}]})
+    scenario = scenario_from_dict(cfg)
+    source = FrameSource(scenario)
+    renderer, screen = source.renderer, scenario.scene.screen
+    assert not np.array_equal(scenario.content_image(0), scenario.content_image(1))
+    for i in (0, 1):  # a new slide: the second render reuses every buffer the first one drew into
+        one_pass = scenario.scene.camera.expected_electrons(
+            renderer.screen_radiance(scenario.content_image(i)), renderer.grid, renderer.quality.camera_supersample,
+            border=screen.wall_reflectance * screen.ambient)
+        assert np.allclose(source.expected(i), one_pass, rtol=2e-6, atol=0.01)

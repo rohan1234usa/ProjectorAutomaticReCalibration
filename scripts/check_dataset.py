@@ -3,11 +3,11 @@
 What was asked for comes from the dataset's scenario.yaml: each perturbation's kind, size
 (``magnitude_px``/``magnitude_mm``/``deg``/``factor``), direction, pivot and schedule. The
 geometry comes from setup.json: the calibrated boxes, the overlap P (box A ∩ box B ∩ content
-rect), and the coarser projector's pixel pitch at P's centroid. All of it is recomputed here with
-this file's own geometry code. Per frame, the recorded ground truth must then match:
+rect), and the coarser projector's pixel pitch at P's centroid. All of it is recomputed with the
+checker's own geometry code (``scripts/check_geometry.py``), independent of ``sim/``. Per frame, the recorded ground truth must then match:
 
-  multiplier  step, staircase and none schedules re-evaluated here; continuous ones within half
-              a 0.02 px quantum of the schedule
+  multiplier  every schedule re-evaluated here; continuous ones (drift, ramp, bump_then_hold,
+              oscillate) may differ from it by half a quantum, the step of m moving the offset 0.02 px
   shift       offset = |sum of B's shift vectors - sum of A's|, each of length
               |m| x size (mm), across = pointing away from the partner, along = at right
               angles to it; the moved projector's h_actual = T(shift) h_cal, the other's unchanged
@@ -21,7 +21,9 @@ within 1e-6 mm (brute force: 1e-3 mm, as a grid slightly underestimates the maxi
 sweep directory, variants that differ only in their perturbation must have produced
 bit-identical frames before the earliest onset among them: they share their seed.
 
-Usage: python -m scripts.check_dataset out/shift_sweep   (one dataset, or a sweep directory)
+Usage:
+    python -m scripts.check_dataset out/shift_sweep   (one dataset, or a sweep directory)
+
 Prints one JSON line per dataset and exits non-zero if any check fails.
 """
 
@@ -39,87 +41,14 @@ from typing import Any
 import numpy as np
 import yaml
 
+from scripts.check_geometry import Geometry, brute_force_mm
+
 TOL_MM = 1e-6
 BRUTE_TOL_MM = 1e-3
 QUANTUM_PX = 0.02
+CONTINUOUS = ("drift", "ramp", "bump_then_hold", "oscillate")
 
 
-# -- this file's own plane geometry ------------------------------------------------------------
-def _apply(h: np.ndarray, pts: np.ndarray) -> np.ndarray:
-    pts = np.atleast_2d(pts)
-    w = h[2, 0] * pts[:, 0] + h[2, 1] * pts[:, 1] + h[2, 2]
-    return np.stack([(h[0, 0] * pts[:, 0] + h[0, 1] * pts[:, 1] + h[0, 2]) / w,
-                     (h[1, 0] * pts[:, 0] + h[1, 1] * pts[:, 1] + h[1, 2]) / w], axis=-1)
-
-
-def _box(h: np.ndarray, resolution: list[int]) -> np.ndarray:
-    w, hh = resolution
-    return _apply(h, np.array([[-0.5, -0.5], [w - 0.5, -0.5], [w - 0.5, hh - 0.5], [-0.5, hh - 0.5]]))
-
-
-def _ccw(poly: np.ndarray) -> np.ndarray:
-    area = np.sum(poly[:, 0] * np.roll(poly[:, 1], -1) - np.roll(poly[:, 0], -1) * poly[:, 1])
-    return poly if area > 0 else poly[::-1]
-
-
-def _clip(subject: np.ndarray, clip: np.ndarray) -> np.ndarray:
-    """Sutherland-Hodgman: the part of convex `subject` inside convex `clip`."""
-    out = list(_ccw(subject))
-    clip = _ccw(clip)
-    for a, b in zip(clip, np.roll(clip, -1, axis=0)):
-        inside = [(b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= 0 for p in out]
-        new = []
-        for i, p in enumerate(out):
-            q, q_in = out[i - 1], inside[i - 1]
-            if inside[i] != q_in:
-                d = p - q
-                e = b - a
-                t = ((a[0] - q[0]) * e[1] - (a[1] - q[1]) * e[0]) / (d[0] * e[1] - d[1] * e[0])
-                new.append(q + t * d)
-            if inside[i]:
-                new.append(p)
-        out = new
-    return np.array(out)
-
-
-def _centroid(poly: np.ndarray) -> np.ndarray:
-    x, y = poly[:, 0], poly[:, 1]
-    cross = x * np.roll(y, -1) - np.roll(x, -1) * y
-    return np.array([np.sum((x + np.roll(x, -1)) * cross), np.sum((y + np.roll(y, -1)) * cross)]) / (3 * np.sum(cross))
-
-
-def _pitch(h: np.ndarray, at_mm: np.ndarray) -> float:
-    u, v = _apply(np.linalg.inv(h), at_mm)[0]
-    w = h[2, 0] * u + h[2, 1] * v + h[2, 2]
-    return math.sqrt(abs(np.linalg.det(h) / w**3))
-
-
-class Geometry:
-    def __init__(self, setup: dict[str, Any]) -> None:
-        self.h = {n: np.array(p["h_cal_px_to_mm"]) for n, p in setup["projectors"].items()}
-        self.res = {n: p["resolution"] for n, p in setup["projectors"].items()}
-        self.boxes = {n: _box(self.h[n], self.res[n]) for n in self.h}
-        x0, y0, x1, y1 = setup["content_rect_mm"]
-        rect = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=float)
-        self.overlap = _clip(_clip(self.boxes["a"], self.boxes["b"]), rect)
-        self.pitch = max(_pitch(self.h[n], _centroid(self.overlap)) for n in self.h)
-
-    def pivot(self, name: str, spec: Any) -> np.ndarray:
-        if spec in (None, "centre"):
-            w, h = self.res[name]
-            return _apply(self.h[name], np.array([(w - 1) / 2, (h - 1) / 2]))[0]
-        if spec == "overlap_centre":
-            return _centroid(self.overlap)
-        if spec == "far_corner":
-            d = np.hypot(*(self.boxes[name] - _centroid(self.overlap)).T)
-            return self.boxes[name][int(np.nonzero(d >= d.max() - 1e-9)[0][0])]
-        return np.array(spec, dtype=float)
-
-    def reach(self, pivot: np.ndarray) -> float:
-        return float(np.hypot(*(self.overlap - pivot).T).max())
-
-
-# -- what the scenario asked for ---------------------------------------------------------------
 def _specs(scenario: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     out = []
     perturbation = scenario.get("perturbation")
@@ -139,33 +68,42 @@ def _size_mm(spec: dict[str, Any], pitch: float) -> float | None:
     return None
 
 
-def expected_multiplier(schedule: Any, t: Fraction) -> float | None:
-    """None, step and staircase schedules, re-evaluated here; None for the continuous ones."""
-    if schedule in (None, "none") or (isinstance(schedule, dict) and schedule.get("type") == "none"):
+def _exact(value: Any) -> Fraction:
+    return Fraction(str(value))  # YAML's decimal text, as written
+
+
+def expected_multiplier(schedule: Any, t: Fraction) -> float:
+    """The schedule's multiplier m(t), before any quantization (see sim/schedule.py's table)."""
+    if schedule in (None, "none") or schedule.get("type") == "none" or t < _exact(schedule.get("t0_s", 0)):
         return 0.0
-    t0 = Fraction(str(schedule.get("t0_s", 0)))
-    if schedule["type"] == "step":
-        return 1.0 if t >= t0 else 0.0
-    if schedule["type"] == "staircase":
-        if t < t0:
-            return 0.0
-        k = int((t - t0) // Fraction(str(schedule["hold_s"])))
-        return float(schedule["levels"][min(k, len(schedule["levels"]) - 1)])
-    return None
+    kind, dt = schedule["type"], t - _exact(schedule.get("t0_s", 0))
+    if kind == "step":
+        return 1.0
+    if kind == "staircase":
+        levels = schedule["levels"]
+        return float(levels[min(int(dt // _exact(schedule["hold_s"])), len(levels) - 1)])
+    if kind == "drift":
+        return float(_exact(schedule["rate_per_h"]) * dt / 3600)
+    if kind == "ramp":
+        return float(min(Fraction(1), dt / _exact(schedule["duration_s"])))
+    if kind == "bump_then_hold":
+        peak, hold, tau = (float(_exact(schedule.get(k, 1))) for k in ("peak", "hold", "settle_s"))
+        return hold + (peak - hold) * (math.exp(-float(dt) / tau) if tau > 0 else 0.0)
+    return 0.5 * (1 - math.cos(2 * math.pi * float(dt / _exact(schedule["period_s"]))))  # oscillate
 
 
-def brute_force_mm(line: dict[str, Any], geo: Geometry) -> float:
-    d = {n: np.array(line["truth"]["h_actual"][n]) @ np.linalg.inv(geo.h[n]) for n in ("a", "b")}
-    poly = geo.overlap
-    lo, hi = poly.min(axis=0), poly.max(axis=0)
-    gx, gy = np.meshgrid(np.linspace(lo[0], hi[0], 401), np.linspace(lo[1], hi[1], 401))
-    pts = np.stack([gx.ravel(), gy.ravel()], axis=-1)
-    inside = np.ones(len(pts), bool)
-    for a, b in zip(_ccw(poly), np.roll(_ccw(poly), -1, axis=0)):
-        inside &= (b[0] - a[0]) * (pts[:, 1] - a[1]) - (b[1] - a[1]) * (pts[:, 0] - a[0]) >= -1e-9
-    edge_pts = [p + np.linspace(0, 1, 2001)[:, None] * (q - p) for p, q in zip(poly, np.roll(poly, -1, axis=0))]
-    pts = np.vstack([pts[inside], poly, *edge_pts])
-    return float(np.hypot(*(_apply(d["b"], pts) - _apply(d["a"], pts)).T).max())
+def _full_strength(name: str, spec: dict[str, Any], geo: Geometry) -> tuple[float | None, float]:
+    """(rotation angle or scale - 1 at m = 1, else None; the offset it alone then causes, in mm)."""
+    size = _size_mm(spec, geo.pitch)
+    if spec["kind"] in ("shift", "keystone"):
+        return None, abs(size)
+    r = geo.reach(geo.pivot(name, spec.get("pivot")))
+    if spec["kind"] == "rotation":
+        full = (math.radians(float(spec["deg"])) if size is None
+                else math.copysign(2 * math.asin(min(1.0, abs(size) / (2 * r))), size))
+        return full, 2 * r * abs(math.sin(full / 2))
+    full = float(spec["factor"]) - 1.0 if size is None else size / r
+    return full, abs(full) * r
 
 
 def _frame_expectation(line: dict[str, Any], specs: list, geo: Geometry, problems: list[str]) -> tuple[float | None, bool]:
@@ -176,18 +114,14 @@ def _frame_expectation(line: dict[str, Any], specs: list, geo: Geometry, problem
         return None, False
     t = Fraction(repr(line["t_s"]))
     active = []
-    for (name, spec), entry in zip(specs, entries):
+    for (name, spec), entry in zip(specs, entries, strict=True):
         m = expected_multiplier(spec.get("schedule"), t)
-        if m is None:  # continuous: quantized from the schedule's own value
-            size = _size_mm(spec, geo.pitch)
-            if size:
-                quantum = QUANTUM_PX * geo.pitch / abs(size)
-                if abs(entry["applied"] - entry["scheduled"]) > quantum / 2 + 1e-12:
-                    problems.append(f"frame {line['i']}: applied {entry['applied']} is off the schedule's "
-                                    f"{entry['scheduled']}")
-            m = entry["applied"]
-        elif entry["applied"] != m or entry["projector"] != name or entry["kind"] != spec["kind"]:
+        unit = _full_strength(name, spec, geo)[1]
+        kind = spec["schedule"].get("type") if isinstance(spec.get("schedule"), dict) else None
+        quantum = QUANTUM_PX * geo.pitch / unit if kind in CONTINUOUS and unit > 0 else 0.0
+        if abs(entry["applied"] - m) > quantum / 2 + 1e-12 or entry["projector"] != name or entry["kind"] != spec["kind"]:
             problems.append(f"frame {line['i']}: {name} {spec['kind']} applied {entry['applied']}, expected {m}")
+        m = entry["applied"]  # within its quantum of the schedule: what the offset follows
         if m != 0.0:
             active.append((name, spec, entry, m))
     if not active:
@@ -223,16 +157,13 @@ def _frame_expectation(line: dict[str, Any], specs: list, geo: Geometry, problem
         pivot = geo.pivot(name, spec.get("pivot"))
         if "pivot_mm" in entry and not np.allclose(entry["pivot_mm"], pivot, atol=1e-9):
             problems.append(f"frame {line['i']}: pivot {entry['pivot_mm']} is not the requested {spec.get('pivot', 'centre')}")
-        r = geo.reach(pivot)
-        size = _size_mm(spec, geo.pitch)
+        full, unit = _full_strength(name, spec, geo)
         if spec["kind"] == "rotation":
-            full = math.radians(float(spec["deg"])) if size is None else math.copysign(2 * math.asin(abs(size) / (2 * r)), size)
-            return 2 * r * abs(math.sin(m * full / 2)), False
+            return 2 * geo.reach(pivot) * abs(math.sin(m * full / 2)), False
         if spec["kind"] == "scale":
-            full = float(spec["factor"]) - 1.0 if size is None else size / r
-            return abs(m * full) * r, False
+            return abs(m * full) * geo.reach(pivot), False
         if spec["kind"] == "keystone" and m == 1.0:
-            return abs(size), False
+            return unit, False
     return None, True
 
 
@@ -286,8 +217,8 @@ def check_paired(root: Path, variants: list[str]) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> bool:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("path", type=Path)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("path", type=Path, help="a dataset directory, or a sweep directory with variants.json")
     args = parser.parse_args(argv)
     index = args.path / "variants.json"
     ok = True

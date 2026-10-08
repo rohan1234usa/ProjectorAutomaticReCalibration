@@ -57,7 +57,7 @@ def test_patches_sit_inside_their_true_regions_for_a_rotated_overlap():
 
 def test_missing_regions_report_null(tmp_path):
     cfg = copy.deepcopy(TINY_SCENARIO)
-    cfg["content"] = {"type": "slide"}  # no black border: no black patches to measure
+    cfg["content"] = {"type": "held"}  # no black border: no black patches to measure
     summary = _run(tmp_path, cfg)
     assert summary["levels"]["unlit"] is not None
     assert summary["levels"]["black_a"] is None and summary["levels_display_255"]["black_overlap"] is None

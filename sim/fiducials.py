@@ -10,7 +10,8 @@ around the black square gives the detector the contrast ring it needs to find th
 Layout. Eight markers, ids 0-7. One sits in each bezel corner (0 TL, 1 TR, 2 BR, 3 BL), so a
 camera that sees the whole screen sees all four corners of the frame. Two more sit on each
 side of the overlap (4, 5 above and 6, 7 below a vertical overlap; 4, 5 left and 6, 7 right of
-a horizontal one), so a camera zoomed on the overlap still sees at least four.
+a horizontal one). A camera zoomed on a vertical overlap that spans the screen's height (side by
+side) therefore still sees four.
 
 Rendering. Paper and ink are painted into the screen grid's reflectance map by exact area
 coverage, *per material*. The ink coverage of every grid pixel near a marker is
@@ -24,22 +25,27 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cache
 from typing import Any
 
 import cv2
 import numpy as np
 
 from sim.cfg import check_keys, choice, integer, num, pair
-from sim.planar import apply_h, rect_polygon
+from sim.planar import apply_h, is_vertical, rect_polygon
 from sim.screen import Screen, ScreenGrid
 
 DICTIONARY = "DICT_4X4_50"
 CELLS = 6  # 4 x 4 data bits inside a one-cell black border
-GAP_MM = 10.0  # least gap between two markers' paper, and between paper and the bezel's edges
+GAP_MM = 10.0  # gap the auto layout keeps between markers' paper and from the bezel's edges
 
 
-@lru_cache(maxsize=None)
+def footprint_mm(size_mm: float, quiet_zone_cells: int) -> float:
+    """Side of a marker's printed paper: its black square plus the quiet zone on both sides."""
+    return size_mm + 2 * quiet_zone_cells * (size_mm / CELLS)
+
+
+@cache
 def cell_matrix(marker_id: int) -> np.ndarray:
     """(6, 6) ink matrix of DICT_4X4_50 marker `marker_id`: 1 = black cell, row 0 at the top."""
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
@@ -74,7 +80,7 @@ class MarkerSet:
     @property
     def footprint_mm(self) -> float:
         """Side of the printed paper: the square plus its quiet zone on both sides."""
-        return self.size_mm + 2 * self.quiet_zone_cells * self.cell_mm
+        return footprint_mm(self.size_mm, self.quiet_zone_cells)
 
     def footprint(self, marker_id: int) -> tuple[float, float, float, float]:
         cx, cy = self.centres_mm[marker_id]
@@ -110,14 +116,14 @@ def auto_layout(
     right bezel beside its top and bottom edges. They are kept clear of the corner markers.
     """
     b = screen.bezel.width_mm
-    fp = size_mm * (CELLS + 2 * quiet_zone_cells) / CELLS
+    fp = footprint_mm(size_mm, quiet_zone_cells)
     if fp + 2 * GAP_MM > b:
         raise ValueError(f"markers: a {fp:.1f} mm marker needs a bezel of at least {fp + 2 * GAP_MM:.1f} mm, got {b}")
     w, h = screen.size_mm
     m = b / 2  # the bezel's centre line
     centres = [(-m, -m), (w + m, -m), (w + m, h + m), (-m, h + m)]
     lo, hi = np.min(overlap, axis=0), np.max(overlap, axis=0)
-    vertical = (hi[1] - lo[1]) >= (hi[0] - lo[0])
+    vertical = is_vertical(overlap)
     axis = 0 if vertical else 1  # the screen axis along which the pair is spread
     length = w if vertical else h
     middle = (lo[axis] + hi[axis]) / 2
@@ -159,8 +165,8 @@ def paint(refl: np.ndarray, grid: ScreenGrid, markers: MarkerSet, background: fl
     for marker_id in range(len(markers.centres_mm)):
         rs, cs, foot = grid.rect_coverage(markers.footprint(marker_id))
         sx, sy = markers.square(marker_id)[0]
-        cx = np.stack([grid.coverage(sx + k * cell, sx + (k + 1) * cell, 0, cs.start, cs.stop) for k in range(CELLS)])
-        cy = np.stack([grid.coverage(sy + k * cell, sy + (k + 1) * cell, 1, rs.start, rs.stop) for k in range(CELLS)])
+        cx = np.stack([grid.coverage(sx + k * cell, sx + (k + 1) * cell, "x", cs.start, cs.stop) for k in range(CELLS)])
+        cy = np.stack([grid.coverage(sy + k * cell, sy + (k + 1) * cell, "y", rs.start, rs.stop) for k in range(CELLS)])
         ink = (cy.T @ cell_matrix(marker_id) @ cx).astype(np.float32)
         refl[rs, cs] += np.float32(markers.paper - background) * foot + np.float32(markers.ink - markers.paper) * ink
 
@@ -183,25 +189,23 @@ _KEYS = {"layout", "centres_mm", "size_mm", "quiet_zone_cells", "paper", "ink"}
 
 
 def from_config(cfg: Mapping[str, Any], screen: Screen, overlap: np.ndarray) -> MarkerSet:
-    """Build the marker set from a scenario's ``screen.bezel.markers`` block."""
-    check_keys(cfg, _KEYS, "screen.bezel.markers")
-    size = num(cfg.get("size_mm", 80.0), "markers.size_mm")
-    quiet = integer(cfg.get("quiet_zone_cells", 1), "markers.quiet_zone_cells")
-    layout = choice(cfg.get("layout", "auto"), ("auto", "explicit"), "markers.layout")
+    """Build the marker set from a scenario's ``screen.bezel.markers`` block (MarkerSet's defaults fill the rest)."""
+    where = "screen.bezel.markers"
+    check_keys(cfg, _KEYS, where)
+    params: dict[str, Any] = {k: num(cfg[k], f"{where}.{k}") for k in ("size_mm", "paper", "ink") if k in cfg}
+    if "quiet_zone_cells" in cfg:
+        params["quiet_zone_cells"] = integer(cfg["quiet_zone_cells"], f"{where}.quiet_zone_cells")
+    layout = choice(cfg.get("layout", "auto"), ("auto", "explicit"), f"{where}.layout")
     if layout == "explicit":
         if "centres_mm" not in cfg:
-            raise ValueError("markers: layout explicit needs centres_mm")
-        centres = tuple(pair(c, "markers.centres_mm") for c in cfg["centres_mm"])
+            raise ValueError(f"{where}: layout explicit needs centres_mm")
+        centres = tuple(pair(c, f"{where}.centres_mm") for c in cfg["centres_mm"])
     else:
         if "centres_mm" in cfg:
-            raise ValueError("markers: centres_mm is only used with layout: explicit")
-        centres = auto_layout(screen, overlap, size, quiet)
-    markers = MarkerSet(
-        centres_mm=centres,
-        size_mm=size,
-        quiet_zone_cells=quiet,
-        paper=num(cfg.get("paper", 0.8), "markers.paper"),
-        ink=num(cfg.get("ink", 0.04), "markers.ink"),
-    )
+            raise ValueError(f"{where}: centres_mm is only used with layout: explicit")
+        defaults = MarkerSet(centres_mm=((0.0, 0.0),))
+        size = params.get("size_mm", defaults.size_mm)
+        centres = auto_layout(screen, overlap, size, params.get("quiet_zone_cells", defaults.quiet_zone_cells))
+    markers = MarkerSet(centres_mm=centres, **params)
     check_on_bezel(markers, screen)
     return markers

@@ -35,7 +35,7 @@ TINY_SCENARIO: dict = {
     "arrangement": {"preset": "side_by_side", "width_mm": WIDTH_MM, "overlap_mm": 60, "vertical_offset_mm": 0.3},
     "projectors": {"a": {"resolution": list(RES)}, "b": {"resolution": list(RES)}},
     "blend": {"shape": "cosine"},
-    "content": {"type": "slide", "border_frac": 0.1},
+    "content": {"type": "held", "border_frac": 0.1},
     "camera": {"preset": "whole_screen", "resolution": list(CAMERA_RES)},
 }
 
@@ -124,7 +124,7 @@ def grid_masks(setup: CalibrationSetup, grid: ScreenGrid, margin_px: float) -> d
 
     Keys: union (covered by either projector, inside the content), overlap, only_<name>.
     """
-    pts = grid.centers_mm()
+    pts = grid.centres_mm()
     a, b = setup.names
     in_a = points_in_convex(setup.box_mm(a), pts)
     in_b = points_in_convex(setup.box_mm(b), pts)

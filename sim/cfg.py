@@ -6,10 +6,10 @@ fall back to a default. Two YAML traps are handled here once for every module:
 * PyYAML reads ``1e-3`` (no decimal point) as the *string* "1e-3", while ``1.0e-3`` is a float.
   Every numeric field therefore goes through :func:`num`, which accepts both spellings and
   rejects booleans (``yes``/``no`` are booleans in YAML 1.1).
-* Times are exact rationals (``fractions.Fraction``), so that "is this exposure straddling a
-  video frame boundary?" never depends on floating-point rounding. :func:`seconds` converts a
-  YAML number through its decimal text (``0.0123`` becomes exactly 123/10000) and also accepts
-  ratios such as ``"1/30"``.
+* Times and frame rates are exact rationals (``fractions.Fraction``), so that "is this
+  exposure straddling a video frame boundary?" never depends on floating-point rounding.
+  :func:`rational` converts a YAML number through its decimal text (``0.0123`` becomes exactly
+  123/10000) and also accepts ratios such as ``"1/30"``; :func:`seconds` is it for times.
 """
 
 from __future__ import annotations
@@ -66,10 +66,10 @@ def integer(value: Any, where: str) -> int:
     raise ValueError(f"{where}: expected an integer, got {value!r}")
 
 
-def seconds(value: Any, where: str) -> Fraction:
-    """An exact time in seconds: 0.5 -> 1/2, 0.0123 -> 123/10000, "1/30" -> 1/30."""
+def rational(value: Any, where: str, what: str = "an exact number") -> Fraction:
+    """An exact rational: 0.5 -> 1/2, 0.0123 -> 123/10000, "1/30" -> 1/30. `what` names it in errors."""
     if isinstance(value, bool):
-        raise ValueError(f"{where}: expected a time in seconds, got a boolean")
+        raise ValueError(f"{where}: expected {what}, got a boolean")
     if isinstance(value, Fraction):
         return value
     if isinstance(value, int):
@@ -81,7 +81,12 @@ def seconds(value: Any, where: str) -> Fraction:
             return Fraction(value.strip())
         except (ValueError, ZeroDivisionError):
             pass
-    raise ValueError(f"{where}: expected a time in seconds, got {value!r}")
+    raise ValueError(f"{where}: expected {what}, got {value!r}")
+
+
+def seconds(value: Any, where: str) -> Fraction:
+    """An exact time in seconds (see :func:`rational`)."""
+    return rational(value, where, "a time in seconds")
 
 
 def pair(value: Any, where: str, kind: type = float) -> tuple[Any, Any]:

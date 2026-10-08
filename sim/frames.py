@@ -32,7 +32,7 @@ from sim.nuisance import occluder_mask
 from sim.planar import box_mm, clip_convex, rect_polygon
 from sim.render import compose, readonly
 from sim.scenario import Scenario
-from sim.sequence import ContentKey, Segments
+from sim.sequence import EPSILON, ContentKey, Segments
 from sim.state import FrameState, frame_state
 from sim.truth import ALIGNED_MM, coarse_pitch_mm, offset_mm, relative_homography
 
@@ -81,10 +81,10 @@ class FrameSource:
 
     # -- rendering ------------------------------------------------------------------------------
     def _view(self, key: tuple) -> dict[str, Any]:
-        """The camera after its knocks so far, with its own images of the room light and lamp."""
+        """The camera after its knocks so far, with its own images of the room light and bezel light."""
         if key not in self._views:
             camera = self.camera
-            for bump, m in zip(self.scenario.nuisances.bumps, key):
+            for bump, m in zip(self.scenario.nuisances.bumps, key, strict=True):
                 if m:
                     camera = camera.moved(bump.image_transform(m, camera.resolution))
             self._views[key] = {"camera": camera}
@@ -96,11 +96,11 @@ class FrameSource:
             view["room"] = self.renderer.room_electrons(view["camera"])
         return view["room"]
 
-    def _lamp(self, key: tuple) -> np.ndarray:
+    def _bezel_light(self, key: tuple) -> np.ndarray:
         view = self._view(key)
-        if "lamp" not in view:
-            view["lamp"] = self.renderer.lamp_electrons(view["camera"])
-        return view["lamp"]
+        if "bezel" not in view:
+            view["bezel"] = self.renderer.bezel_light_electrons(view["camera"])
+        return view["bezel"]
 
     def _light_for(self, name: str, segments: Segments) -> np.ndarray:
         def make() -> np.ndarray:
@@ -137,22 +137,24 @@ class FrameSource:
         state = state or self.state(i)
         key = state.camera_key
         terms = [(state.ambient, self._room(key))]
-        lamp = self.scene.screen.bezel.light
-        if lamp > 0:
-            terms.append((lamp, self._lamp(key)))
+        bezel_light = self.scene.screen.bezel.light
+        if bezel_light > 0:
+            terms.append((bezel_light, self._bezel_light(key)))
         projectors = self._projector_terms(state)
         electrons = compose(terms + projectors)
-        if state.occluder:
+        if state.people:
             camera = self._view(key)["camera"]
-            mask = occluder_mask(state.occluder, camera.h_mm_to_px, camera.resolution)
-            # The person is lit like the screen behind them (projector light, room light) but
-            # reflects only `occluder_reflectance` of it; projector images already carry the
-            # screen's reflectance, so they are rescaled.
+            # A person is lit like the screen behind them (projector light, room light) but
+            # reflects only their own reflectance of it; projector images already carry the
+            # screen's reflectance, so they are rescaled. Later people pass in front.
+            lit = compose(projectors)
             uniform = camera.vignetting_map() * np.float32(camera.electrons_per_unit_radiance * state.ambient)
-            person = compose(projectors) * np.float32(state.occluder_reflectance / self.scene.screen.reflectance)
-            person += (uniform if self.renderer.mono else uniform[..., None]) * np.float32(state.occluder_reflectance)
-            m = mask if self.renderer.mono else mask[..., None]
-            electrons += m * (person - electrons)
+            for reflectance, polygons in state.people:
+                mask = occluder_mask(polygons, camera.h_mm_to_px, camera.resolution)
+                person = lit * np.float32(reflectance / self.scene.screen.reflectance)
+                person += (uniform if self.renderer.mono else uniform[..., None]) * np.float32(reflectance)
+                m = mask if self.renderer.mono else mask[..., None]
+                electrons += m * (person - electrons)
         return electrons
 
     def frame(self, i: int, state: FrameState | None = None) -> np.ndarray:
@@ -186,7 +188,7 @@ class FrameSource:
         sequence = self.scenario.sequence
         tags = sorted({sequence.tag(key) for key, _ in state.segments})
         perturbations = []
-        for p, scheduled, applied in zip(self.scenario.perturbations, state.scheduled, state.applied):
+        for p, scheduled, applied in zip(self.scenario.perturbations, state.scheduled, state.applied, strict=True):
             entry = {"projector": p.projector, "scheduled": scheduled, "applied": applied, **p.tag(applied)}
             if p.kind != "shift":
                 entry["pivot_mm"] = [float(v) for v in p.pivot]
@@ -200,7 +202,7 @@ class FrameSource:
                 "segments": [["/".join(str(k) for k in key), float(w)] for key, w in state.segments],
                 "frames_in_exposure": len(state.segments),
                 "cut_in_exposure": any(not sequence.same_shot(a, b)
-                                       for (a, _), (b, _) in zip(state.segments, state.segments[1:])),
+                                       for (a, _), (b, _) in zip(state.segments, state.segments[1:], strict=False)),
             },
             "truth": {
                 "aligned": offset < ALIGNED_MM,
@@ -228,9 +230,13 @@ class FrameSource:
         """Reference feed at frame i: the last `ring` pictures sent before the exposure ends, newest first.
 
         Each is (send time in seconds, content key, picture). The frame shows what was sent
-        ``reference.lag_s`` earlier, which is among them when the ring is long enough.
+        ``reference.lag_s`` earlier, which is among them when the ring is long enough. The key is
+        the simulator's own label for the picture: the harness must strip it before the detector
+        sees the feed, which has to match pictures by their content alone.
         """
-        end = self.time(i) + self.scenario.timing.exposure - Fraction(1, 10**9)  # the exposure is [t, t + e)
+        if not self.scenario.reference["available"]:
+            raise ValueError(f"{self.scenario.variant}: the scenario has no source feed (reference.available)")
+        end = self.time(i) + self.scenario.timing.exposure - EPSILON  # the exposure is [t, t + exposure)
         sent = self.scenario.sequence.sent_before(end, ring)
         return [(float(t), key, self.scenario.sequence.image(key)) for t, key in sent]
 

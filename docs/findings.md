@@ -407,11 +407,12 @@ A review of the change found nine problems. All are fixed, each with a test.
   - lamp dimming to 0.85 scales that projector's light by exactly 0.85, black level included;
   - a room-light step from 0.02 to 0.05 raises the unlit screen 2.5×;
   - a camera knock of (5, −3) px moves every marker by exactly that;
-  - a person walking past darkens the screen behind them to 0.2–0.5 and hides the markers they
-    cover;
+  - a person walking past darkens the screen behind them to 0.3/0.9 of its level (their
+    reflectance against the screen's, under the same light) and hides the markers they cover;
   - flicker vanishes when the exposure spans whole periods, and makes rolling-shutter bands
     when it doesn't;
-  - sharpening adds halos without changing the level.
+  - sharpening adds halos without changing the level: at a raster edge, a bright fringe and a
+    dark one of 2.2% of the step each (amount 0.8, σ 1 px).
 - **Video:** an exposure that straddles two video frames mixes them in exact shares (7/10 and
   3/10).
 - **Reference feed:** sends are timestamped on the sending clock, and the projectors show
@@ -480,9 +481,10 @@ renders both projectors anew. Sizes per run: 397, 288, 91 and 55 MB, mostly the 
 
 1. **Photo statistics.** The texture's amplitude spectrum falls as 1/f^1.2, the middle of the
    natural-image range (1.0–1.4). With 1/f, a 2 px pan changed a frame by 12% on average.
-2. **Flicker** is modelled as a sinusoid per projector, with a fixed random phase from the seed
-   and no per-frame randomness. Real DLP colour-wheel modulation is not sinusoidal; the
-   closed-form average is exact for this model.
+2. **Flicker** is a sinusoid per projector whose phase is drawn per frame from the seed
+   (spawn key (2, flicker, frame)), since the camera's clock is not locked to the projector's.
+   Real DLP colour-wheel modulation is not sinusoidal; the closed-form average is exact for
+   this model.
 3. **Occluder:**
    - a flat silhouette (head, body, legs) in front of the screen;
    - lit like the screen behind it, with reflectance 0.3;
@@ -493,7 +495,7 @@ renders both projectors anew. Sizes per run: 397, 288, 91 and 55 MB, mostly the 
 5. **Screen gain** (a high-gain screen's hotspot) is not built. It would need a gain map per
    projector, and none of the planned detector phases needs it yet.
 6. **`dark_room`** has no perturbation and lasts 5 minutes: it only asks whether markers can be
-   found, with or without the bezel lamp, and what averaging buys.
+   found, with or without the bezel light, and what averaging buys.
 7. **`aligned_nuisances`** runs one nuisance per variant, plus one variant with all of them.
    Flicker and sharpening are installation properties, present from calibration on; the others
    start after the trusted window.
@@ -534,5 +536,140 @@ in item 8 above. The others are fixed, with tests wherever they concern code:
    flags only real changes (a cut, a new picture). The new `frames_in_exposure` counts the
    pictures.
 8. **No scenario used uplift, the reference feed or a lag.** See item 9 above.
-9. **Placeholders in this entry.**
+9. **This entry still had placeholders** for the run numbers; they now hold the measured
+   values.
 10. **`visualize.py` placed its level patches with the camera before any knock.**
+
+## 2026-10-08 — Phase 2 refinement before the pull request
+
+Three read-only reviews went over everything Phase 2 changed: the rendering and geometry
+code, the content, timeline, dataset and script files, and the docs, scenarios and tests.
+Their findings are fixed below. None of the changes alters a frame that was already generated:
+- **Stored datasets still re-render bit-identically.** Sampled frames of 8 stored datasets were
+  re-rendered after the last change and match their stored sha256: `aligned_slides`, two
+  `shift_sweep` variants, `aligned_video`, two `aligned_nuisances` variants (including frames
+  with a person passing), `boundary_hidden` and the earlier `camera_zoomed`.
+- **Content pictures are unchanged.** The content refactor below leaves all 1,703 pictures the
+  catalogue draws identical, video frames included (every item sampled, hashed before and
+  after).
+- **Variant names are unchanged.** All 99 names in the catalogue stay the same, so existing
+  dataset directories keep their names.
+- **Tests:** 280 (20 slow), all passing.
+
+### Performance
+
+- **Buffer reuse.** Each frame used to allocate several grid- and sensor-sized temporaries,
+  hundreds of MB in all. They are now kept between frames:
+  - a zeroed screen grid, which each projector's light is drawn into and wiped from;
+  - a warp window per projector (A's and B's differ in shape);
+  - the camera's blurred, warped and supersampled images.
+
+  Values cannot change, because every operation writes all of its output. One process now
+  renders a video frame in 160 ms instead of 178 ms.
+- **Parallel workers are limited by memory traffic.** With 4 workers, each video frame takes
+  0.97–1.03 s in each worker, so 4 workers render 3.9–4.1 frames/s against 5.6–6.2 for one
+  process.
+  - Profiling showed every operation uniformly 3–4× slower, not one hot spot.
+  - Limiting BLAS to one thread changed nothing (4.3 frames/s).
+  - This explains the 735 ms per frame in the 2b table: it is CPU time per frame inside each of
+    4 workers.
+  - Static content still gains from workers: the new `camera_zoomed` ran in 251 s with
+    `--jobs 4`, at 45–47 ms per frame per worker. `make_dataset --help` now says so.
+- **Cost per frame now** (demo scale, standard quality, one process):
+
+  | Frame | Cost |
+  |---|---|
+  | unchanged (noise and encoding only) | 24 ms |
+  | new slide | 126 ms |
+  | video | 163 ms |
+
+- **The `fine` preset** (Phase 1's deferred item) uses 3 × 3 screen samples per projector
+  pixel and 3 × 3 camera sub-pixels:
+  - its screen grid is 64 Mpx, against 28 Mpx for `standard`;
+  - a new slide takes 190 ms, against 126 ms.
+
+### `camera_zoomed` is now paired with `shift_sweep`
+
+- It now has `shift_sweep`'s seed (21), content (decks and black) and onset, so the zoomed and
+  whole-screen cameras compare shift for shift. Before, it had its own seed, photos and steps.
+- **Steps:** 0, 0.25, 0.5, 1, 1.5, 2, 4 and 8 px across, 8 variants. 1.5 px (1.56 mm) sits
+  just above the zoomed echo floor, max(`MIN_OFFSET_MM`, 2.5 px / 1.74 px/mm) = 1.5 mm.
+- **Reproducible:** regenerated twice, with `--jobs 4` and `--jobs 5`.
+  - Every file under `out/p2b` except `timing.json` and `dataset.json` is byte-identical,
+    which now covers 52,800 frames per run.
+  - `check_dataset` passes.
+  - The 8 variants share all 9,840 of their pre-onset frames.
+- **Markers:** 4–7 are found in all 5 sampled frames. Centre error is p50 0.034, p95 0.072,
+  max 0.089 px (20 sightings), against 0.032 / 0.071 / 0.073 px with the old content.
+
+### Fixes, each with a test
+
+1. **Occluders.** Each person passing keeps their own reflectance. Before, when two people
+   were in the frame at once, the last one's reflectance applied to both. No stored frame had
+   two people at once.
+2. **`check_dataset` re-evaluates every schedule kind itself:** drift, ramp, bump_then_hold
+   and oscillate as well as step and staircase. Before, it trusted the recorded `scheduled`
+   value.
+   - Its own geometry moved to `scripts/check_geometry.py`, so both files stay under 300
+     lines.
+   - A new test sweeps rotation, scale and keystone, each stepped, ramped and drifting. It
+     covers the closed forms and the brute force, and a corrupted line must fail.
+3. **Stripes** use projector A's gamma from the installation instead of an assumed 2.2. Content
+   is encoded once for both projectors, so if B's gamma differed, the stripes would be
+   sinusoidal in A's light only.
+4. **Video items** refuse four bad settings, each with its own message: `fps: 0`, a fps that is
+   not a number, `cut_s: 0`, and `fade_s` without cuts (which was silently ignored).
+5. **Datasets:**
+   - `dataset.json` records `git_dirty`: whether `sim/` differed from the recorded commit;
+   - a missing PNG raises `FileNotFoundError` naming it;
+   - `variants.json` keeps the variants an earlier run wrote, in the sweep's order;
+   - `--every 0` is refused.
+6. **`visualize.py`:**
+   - it places its labels and level patches where the boxes land in the frame shown (it used
+     the calibrated boxes);
+   - it names its output after the variant and frame, so views no longer overwrite each
+     other.
+7. **Sweep labels.** A list of mappings is labelled by each mapping's `type`, `kind` or
+   `preset`. Before, it took each mapping's first value.
+8. **New tests for existing behaviour:**
+   - the cached components sum to one camera pass over the total radiance, bezel light
+     included, also when buffers are reused;
+   - the reference feed runs `lag_s` ahead of the display;
+   - a bezel light of 0.02 makes all 8 markers findable at ambient 0.0003, where none are found
+     without it;
+   - sharpening rings at an edge, 2.2% of the step on each side;
+   - the occluder darkens by exactly 0.3/0.9;
+   - every scheduled nuisance starts after the trusted window;
+   - the slow catalogue test also renders one variant per installation (every arrangement
+     preset);
+   - ArUco's own sub-pixel corners miss the 0.2 px target that the edge-line fits meet.
+
+### Clean-ups (no change in behaviour)
+
+- **One implementation each:**
+  - `content.framed` draws every content kind inside its black border;
+  - `textures.blend_ellipse` serves photos and video;
+  - `sim.dataset.process_pool` serves `make_dataset` and the frame-range split;
+  - `planar.local_scale` and `planar.is_vertical` replace four and two inline copies;
+  - `CalibrationSetup.finest_pitch_mm` replaces `pixel_pitch_mm`, which quietly meant the
+    finest pitch;
+  - the projector names are always (a, b), which fixes the direction of `h_rel`.
+- **Renamed:**
+  - the bezel's own light (it was called "lamp", the word for projector lamps);
+  - `Camera.to_setup_dict`, `ScreenGrid.centres_mm`;
+  - the schedule fields `step` and `settled`;
+  - `tests/markers.refined_corners`.
+- **Removed:**
+  - `Renderer.render` and `Renderer.expected_electrons`, a second frame path without
+    nuisances;
+  - `Screen.unlit_radiance` and `wall_radiance`, `Scene.camera_preset`, `Perturbation.spec`,
+    and `blank_inside`'s `margin_px`;
+  - the Phase 1 alias `type: slide` (`held` is the same thing).
+- **Corrected docs:**
+  - the 2b entry's flicker departure (the phase is drawn per frame);
+  - the occluder ratio;
+  - CLAUDE.md's reference-mode claim: repetitive content fools the kernel at whole-period
+    shifts;
+  - the zoomed camera needs a vertical overlap;
+  - `boundary_hidden` probably keeps the boundary visible;
+  - the slide charts are laid out for side by side.

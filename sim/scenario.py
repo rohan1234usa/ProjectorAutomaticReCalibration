@@ -7,7 +7,7 @@ and their arrangement, the calibration's blend, the camera) and what happens ove
   duration_s, sample_every_s   the run and the camera's sampling period; frame i is exposed
                                during [phase_s + i sample_every_s, ... + exposure_s)
   trusted_window_s             the detector refines its baseline this long after calibration,
-                               so no perturbation may start before it
+                               so no perturbation or scheduled nuisance may start before it
   content                      what is shown (``sim/sequence.py``)
   perturbation                 how projectors drift (``sim/perturb.py``)
   nuisances                    camera bump, lamp dimming, room light, occluder, flicker, sharpening
@@ -19,15 +19,16 @@ its own block, so a typo fails with a message naming the key. Every number goes 
 coercing reader, because YAML reads ``1e-3`` as a string.
 
 Randomness: every random draw comes from the scenario seed through numpy SeedSequence spawn
-keys -- content pictures (0, item, loop, index), camera noise (1, frame) -- so any frame can be
-re-rendered on its own, in any process, and sweep variants share their noise.
+keys -- still pictures (0, item, loop, index), camera noise (1, frame), flicker phase
+(2, flicker, frame), video scenes (3, item, scene) -- so any frame can be re-rendered on its own,
+in any process, and sweep variants share their noise.
 """
 
 from __future__ import annotations
 
 import copy
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -69,7 +70,6 @@ class Scene:
     markers: MarkerSet | None
     quality: Quality
     seed: int
-    camera_preset: str = "whole_screen"
 
     def renderer(self) -> Renderer:
         return Renderer(self.screen, self.projectors, self.setup, self.camera, self.quality, self.markers)
@@ -103,7 +103,7 @@ class Scenario:
     sequence: Sequence
     perturbations: tuple[Perturbation, ...]
     reference: dict[str, Any]
-    nuisances: Nuisances = Nuisances()
+    nuisances: Nuisances = field(default_factory=Nuisances)
 
     def content_image(self, i: int = 0) -> np.ndarray:
         """The first picture shown during frame i."""
@@ -118,7 +118,7 @@ class Scenario:
             "screen": {"size_mm": [float(v) for v in scene.screen.size_mm]},
             **scene.setup.to_setup_dict(gammas),
             "markers": None if scene.markers is None else scene.markers.to_setup_dict(),
-            "camera": {**scene.camera.setup_dict(), "exposure_s": float(self.timing.exposure)},
+            "camera": {**scene.camera.to_setup_dict(), "exposure_s": float(self.timing.exposure)},
             "reference": {"available": bool(self.reference["available"])},
         }
 
@@ -224,7 +224,7 @@ def scenario_from_dict(
     quality_name = data.get("quality", "standard")
     if quality_name not in QUALITY:
         raise ValueError(f"quality must be one of {sorted(QUALITY)}, got {quality_name!r}")
-    scene = Scene(name, the_screen, projectors, setup, cam, markers, QUALITY[quality_name], seed, preset)
+    scene = Scene(name, the_screen, projectors, setup, cam, markers, QUALITY[quality_name], seed)
 
     sample = seconds(data.get("sample_every_s", "1/2"), "sample_every_s")
     timing = Timing(
@@ -251,7 +251,8 @@ def scenario_from_dict(
     size = setup.content_size()
     x0, _, x1, _ = setup.content_rect_mm
     geometry = ContentGeometry(px_per_mm=size[0] / (x1 - x0),
-                               overlap_px=apply_h(np.linalg.inv(setup.content_to_mm(size)), setup.overlap()))
+                               overlap_px=apply_h(np.linalg.inv(setup.content_to_mm(size)), setup.overlap()),
+                               gamma=projectors["a"].gamma)
     sequence = sequence_from_config(data["content"], seed, size, shown_until, geometry, lag=lag)
     perturbations = perturb.from_config(data.get("perturbation"), setup)
     for p in perturbations:

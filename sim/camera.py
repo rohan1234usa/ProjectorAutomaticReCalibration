@@ -5,11 +5,14 @@ Physics, in the order light goes through it:
 1. Geometry. A pinhole camera looking at a flat screen maps it to the image with a homography
    (mm to camera pixels). The ``whole_screen`` preset frames the screen with a 5% margin and a
    slight keystone (top edge a little narrower), as a camera mounted below the screen's centre
-   would see it. The bezel and its markers fall inside that margin. The ``zoomed`` preset frames
-   only the overlap, its control strips and the bezel markers at its two ends, at a chosen
-   resolution on the screen (1.74 px/mm by default, twice the whole-screen camera's); the sensor
-   is turned so its long side runs along the overlap. A camera that is knocked keeps its optics
-   but sees everything shifted and turned in the image (:meth:`Camera.moved`).
+   would see it. Loading a scenario checks that the bezel markers fall inside the frame (with
+   the demo's 3840 x 1600 sensor the width limits the scale, which leaves room above and below
+   for a 150 mm bezel). The ``zoomed`` preset frames only the overlap, its control strips and
+   the bezel markers at its two ends, at a chosen resolution on the screen (1.74 px/mm by
+   default, twice the whole-screen camera's); the sensor is turned so its long side runs along
+   the overlap. It needs an overlap that reaches the bezel at both ends (a side-by-side one), so
+   that at least 4 markers are in view. A camera that is knocked keeps its optics but sees
+   everything shifted and turned in the image (:meth:`Camera.moved`).
 2. Optics. The lens blurs every point into a small spot, the point-spread function, modelled as
    a Gaussian of ``psf_sigma_px``. It also darkens the image towards the corners (vignetting,
    the cos^4 law: falloff (1 + a r^2)^-2). The blur happens before the sensor samples the image,
@@ -18,10 +21,13 @@ Physics, in the order light goes through it:
    variances add, so the total stays ``psf_sigma_px``; the screen-space part uses the local
    scale at the image centre, which keystone changes by only ~2% across the frame.
 3. Pixels. Each sensor pixel collects all the light falling on its square. We render at k times
-   the resolution and average k x k blocks, which is exactly that collection.
+   the resolution and average k x k blocks, which approximates that integral ever better as k
+   grows (``fast`` uses k = 1, point samples of the blurred image; ``standard`` k = 2).
 4. Photons to numbers. Light frees electrons in proportion to radiance; ``well_fill_at_white``
    is the fraction of the full well that radiance 1.0 (one projector's white on a perfect
-   reflector) fills during one exposure. The count fluctuates randomly: shot noise has
+   reflector) fills during one exposure. It already includes the exposure time: the scenario's
+   ``exposure_s`` only says *when* light is collected (which video frames, which flicker
+   phase), never how much. The count fluctuates randomly: shot noise has
    variance equal to the mean, and readout adds read noise. Electrons are scaled to 16-bit
    numbers on top of a fixed pedestal, so noise below zero is not clipped away. Exposure, gain
    and white balance are locked, so all of this stays constant over time.
@@ -45,7 +51,7 @@ import cv2
 import numpy as np
 
 from sim.cfg import check_keys, choice, integer, num, pair, seconds
-from sim.planar import apply_h, homography_from_points, jacobian_det, warp_linear
+from sim.planar import apply_h, homography_from_points, is_vertical, local_scale, scratch, warp_linear
 from sim.screen import ScreenGrid
 
 DN_MAX = 65535
@@ -66,12 +72,18 @@ class Camera:
     color: str = "mono"  # mono: 16-bit luminance frames (h, w); rgb: (h, w, 3)
 
     def __post_init__(self) -> None:
-        if min(self.resolution) < 1 or self.well_fill_at_white <= 0 or self.full_well_e <= 0 or self.gamma <= 0:
-            raise ValueError("camera: bad resolution, well_fill_at_white, full well or gamma")
-        if not 0 <= self.vignetting < 1 or self.psf_sigma_px < 0 or self.read_noise_e < 0:
-            raise ValueError("camera: need 0 <= vignetting < 1, psf_sigma_px >= 0, read_noise_e >= 0")
+        positive = {"resolution": min(self.resolution), "well_fill_at_white": self.well_fill_at_white,
+                    "full_well_e": self.full_well_e, "gamma": self.gamma}
+        for name, value in positive.items():
+            if value <= 0:
+                raise ValueError(f"camera: {name} must be positive, got {getattr(self, name)}")
+        if not 0 <= self.vignetting < 1:
+            raise ValueError(f"camera: vignetting must be in [0, 1), got {self.vignetting}")
+        if self.psf_sigma_px < 0 or self.read_noise_e < 0:
+            raise ValueError(f"camera: psf_sigma_px and read_noise_e must be >= 0, got {self.psf_sigma_px} "
+                             f"and {self.read_noise_e}")
         if not 0 <= self.pedestal_dn < DN_MAX:
-            raise ValueError("camera: pedestal out of range")
+            raise ValueError(f"camera: pedestal_dn must be in [0, {DN_MAX}), got {self.pedestal_dn}")
         if self.color not in COLORS:
             raise ValueError(f"camera: color must be one of {COLORS}, got {self.color!r}")
 
@@ -82,7 +94,7 @@ class Camera:
         resolution: tuple[int, int],
         margin: float = 0.05,
         keystone: float = 0.02,
-        **optics: float | str,
+        **settings: float | str,
     ) -> Camera:
         """Camera framing the whole screen plus `margin` (fraction of each side) on every side.
 
@@ -98,7 +110,7 @@ class Camera:
         image = np.array([[cx - top, cy - half_h], [cx + top, cy - half_h],
                           [cx + half_w, cy + half_h], [cx - half_w, cy + half_h]])
         screen = np.array([[0.0, 0.0], [sw, 0.0], [sw, sh], [0.0, sh]])
-        return cls(resolution=resolution, h_mm_to_px=homography_from_points(screen, image), **optics)
+        return cls(resolution=resolution, h_mm_to_px=homography_from_points(screen, image), **settings)
 
     @classmethod
     def zoomed(
@@ -108,7 +120,7 @@ class Camera:
         resolution: tuple[int, int],
         px_per_mm: float = 1.74,
         keystone: float = 0.02,
-        **optics: float | str,
+        **settings: float | str,
     ) -> Camera:
         """Camera framing the overlap, its control strips and the bezel markers at its two ends.
 
@@ -117,19 +129,19 @@ class Camera:
         """
         cw, ch = resolution
         lo, hi = np.min(overlap_mm, axis=0), np.max(overlap_mm, axis=0)
-        vertical = (hi[1] - lo[1]) >= (hi[0] - lo[0])
-        portrait = vertical == (cw >= ch)  # the sensor's long side must follow the overlap
+        vertical = is_vertical(overlap_mm)
+        turned = vertical == (cw >= ch)  # turn the sensor 90 degrees so its long side follows the overlap
         sw, sh = screen_size_mm
         centre = np.array([(lo[0] + hi[0]) / 2, sh / 2] if vertical else [sw / 2, (lo[1] + hi[1]) / 2])
         uc, vc, s = (cw - 1) / 2, (ch - 1) / 2, px_per_mm
-        half = np.array([ch, cw]) / (2 * s) if portrait else np.array([cw, ch]) / (2 * s)  # field half-size (x, y), mm
+        half = np.array([ch, cw]) / (2 * s) if turned else np.array([cw, ch]) / (2 * s)  # field half-size (x, y), mm
         field = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]]) * half + centre
         d = field - centre
-        # Portrait: screen +y runs along the image's u axis and screen +x up it (a -90 degree turn).
-        image = np.stack([uc + s * d[:, 1], vc - s * d[:, 0]] if portrait else [uc + s * d[:, 0], vc + s * d[:, 1]], axis=-1)
+        # Turned: screen +y runs along the image's u axis and screen +x up it (a -90 degree turn).
+        image = np.stack([uc + s * d[:, 1], vc - s * d[:, 0]] if turned else [uc + s * d[:, 0], vc + s * d[:, 1]], axis=-1)
         top = image[:, 1] < vc
         image[top, 0] = uc + (image[top, 0] - uc) * (1 - keystone)  # the image's top edge a little narrower
-        return cls(resolution=resolution, h_mm_to_px=homography_from_points(field, image), **optics)
+        return cls(resolution=resolution, h_mm_to_px=homography_from_points(field, image), **settings)
 
     def moved(self, image_transform: np.ndarray) -> Camera:
         """The same camera after a knock: its image of everything moves by `image_transform`."""
@@ -148,7 +160,7 @@ class Camera:
         """Camera pixels per screen millimetre at the image centre (local linear scale)."""
         w, h = self.resolution
         centre_mm = apply_h(np.linalg.inv(self.h_mm_to_px), np.array([(w - 1) / 2, (h - 1) / 2]))
-        return float(np.sqrt(abs(jacobian_det(self.h_mm_to_px, centre_mm[0], centre_mm[1]))))
+        return float(local_scale(self.h_mm_to_px, centre_mm[0], centre_mm[1]))
 
     def vignetting_map(self) -> np.ndarray:
         """Fraction of light reaching each pixel, (h, w) float32, read-only: 1 at the centre."""
@@ -166,10 +178,14 @@ class Camera:
         vignetting.setflags(write=False)
         return vignetting
 
-    def optical_image(self, radiance: np.ndarray, grid: ScreenGrid, supersample: int = 1, border: float = 0.0) -> np.ndarray:
+    def optical_image(
+        self, radiance: np.ndarray, grid: ScreenGrid, supersample: int = 1, border: float = 0.0,
+        workspace: dict | None = None,
+    ) -> np.ndarray:
         """Noiseless radiance each pixel records, float32: geometry, PSF, pixel area, vignetting.
 
-        `border` is the radiance seen beyond the grid (the wall). The input is not modified.
+        `border` is the radiance seen beyond the grid (the wall). The input is not modified, and
+        the result is a new array. `workspace` keeps the large temporaries between calls.
         """
         k = int(supersample)
         if k < 1:
@@ -179,27 +195,31 @@ class Camera:
         sigma_pre = min(self.psf_sigma_px, 0.8 / k)  # camera pixels
         sigma_pre_grid = sigma_pre * grid.px_per_mm / self.px_per_mm_at_centre()
         if sigma_pre_grid >= 0.25:
-            radiance = cv2.GaussianBlur(radiance, (0, 0), sigma_pre_grid)
+            radiance = cv2.GaussianBlur(radiance, (0, 0), sigma_pre_grid, dst=scratch(workspace, "pre", radiance.shape))
         else:
             sigma_pre = 0.0  # grid coarser than the sub-pixels: resampling cannot alias
         # Camera pixel (u, v) covers sub-pixels k*u .. k*u + k-1; its centre is k*u + (k-1)/2.
         to_sub = np.array([[k, 0.0, (k - 1) / 2], [0.0, k, (k - 1) / 2], [0.0, 0.0, 1.0]])
         grid_to_sub = to_sub @ self.h_mm_to_px @ np.linalg.inv(grid.mm_to_grid)
-        img = warp_linear(radiance, grid_to_sub, (k * w, k * h), border=border)
+        sub_shape = (k * h, k * w, *radiance.shape[2:])
+        img = warp_linear(radiance, grid_to_sub, (k * w, k * h), border=border, dst=scratch(workspace, "warp", sub_shape))
         sigma_rest = np.sqrt(max(self.psf_sigma_px**2 - sigma_pre**2, 0.0))
         if sigma_rest > 0:
-            img = cv2.GaussianBlur(img, (0, 0), sigma_rest * k)
+            img = cv2.GaussianBlur(img, (0, 0), sigma_rest * k, dst=scratch(workspace, "blur", sub_shape))
         if k > 1:
             assert img.shape[:2] == (k * h, k * w)  # INTER_AREA is an exact block mean only then
             img = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
+        elif workspace is not None:
+            img = img.copy()  # the result must not be a workspace buffer
         v = self.vignetting_map()
         img *= v if img.ndim == 2 else v[..., None]
         return img
 
     def expected_electrons(
-        self, radiance: np.ndarray, grid: ScreenGrid, supersample: int = 1, border: float = 0.0
+        self, radiance: np.ndarray, grid: ScreenGrid, supersample: int = 1, border: float = 0.0,
+        workspace: dict | None = None,
     ) -> np.ndarray:
-        img = self.optical_image(radiance, grid, supersample, border)
+        img = self.optical_image(radiance, grid, supersample, border, workspace)
         img *= np.float32(self.electrons_per_unit_radiance)
         return img
 
@@ -230,8 +250,8 @@ class Camera:
             return (dn - np.float32(self.pedestal_dn)) / np.float32(self.gain_dn_per_e)
         return np.float32(self.full_well_e) * (dn / DN_MAX) ** np.float32(self.gamma)
 
-    def setup_dict(self) -> dict:
-        """Locked camera settings the detector knows (CLAUDE.md 4.1): never the pose or the optics."""
+    def to_setup_dict(self) -> dict:
+        """Locked camera settings the detector knows (CLAUDE.md 4.1): never the pose, PSF or vignetting."""
         return {
             "resolution": [int(v) for v in self.resolution],
             "color": self.color,
@@ -244,8 +264,8 @@ class Camera:
         }
 
 
-_OPTICS = {"psf_sigma_px", "well_fill_at_white", "full_well_e", "read_noise_e", "pedestal_dn", "vignetting", "gamma"}
-_KEYS = _OPTICS | {"preset", "resolution", "margin", "keystone", "px_per_mm", "color", "exposure_s", "phase_s"}
+_SETTINGS = {"psf_sigma_px", "well_fill_at_white", "full_well_e", "read_noise_e", "pedestal_dn", "vignetting", "gamma"}
+_KEYS = _SETTINGS | {"preset", "resolution", "margin", "keystone", "px_per_mm", "color", "exposure_s", "phase_s"}
 
 
 def from_config(cfg: Mapping[str, Any], screen_size_mm: tuple[float, float], overlap_mm: np.ndarray
@@ -259,14 +279,14 @@ def from_config(cfg: Mapping[str, Any], screen_size_mm: tuple[float, float], ove
     resolution = pair(cfg.pop("resolution"), "camera.resolution", int)
     exposure = seconds(cfg.pop("exposure_s", "1/30"), "camera.exposure_s")
     phase = seconds(cfg.pop("phase_s", 0), "camera.phase_s")
-    color = choice(cfg.pop("color", "mono"), ("mono", "rgb"), "camera.color")
+    color = choice(cfg.pop("color", "mono"), COLORS, "camera.color")
     if preset == "whole_screen" and "px_per_mm" in cfg:
         raise ValueError("camera: px_per_mm belongs to the zoomed preset (whole_screen uses margin)")
     if preset == "zoomed" and "margin" in cfg:
         raise ValueError("camera: margin belongs to the whole_screen preset (zoomed uses px_per_mm)")
-    optics: dict[str, Any] = {k: num(v, f"camera.{k}") for k, v in cfg.items()}
-    if "pedestal_dn" in optics:
-        optics["pedestal_dn"] = integer(optics["pedestal_dn"], "camera.pedestal_dn")
+    settings: dict[str, Any] = {k: num(v, f"camera.{k}") for k, v in cfg.items()}
+    if "pedestal_dn" in settings:
+        settings["pedestal_dn"] = integer(settings["pedestal_dn"], "camera.pedestal_dn")
     if preset == "zoomed":
-        return Camera.zoomed(screen_size_mm, overlap_mm, resolution, color=color, **optics), preset, exposure, phase
-    return Camera.whole_screen(screen_size_mm, resolution, color=color, **optics), preset, exposure, phase
+        return Camera.zoomed(screen_size_mm, overlap_mm, resolution, color=color, **settings), preset, exposure, phase
+    return Camera.whole_screen(screen_size_mm, resolution, color=color, **settings), preset, exposure, phase

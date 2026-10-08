@@ -34,7 +34,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -45,7 +45,7 @@ from sim.cfg import check_keys, num, pair
 class Bezel:
     width_mm: float = 0.0  # 0 = no bezel: the wall starts at the screen's edge
     reflectance: float = 0.05  # black velvet frame
-    light: float = 0.0  # irradiance of the bezel's own lamp on the bezel, x one projector's white
+    light: float = 0.0  # irradiance of the bezel's own light on the bezel, x one projector's white
 
     def __post_init__(self) -> None:
         if self.width_mm < 0 or not 0 < self.reflectance <= 1 or self.light < 0:
@@ -72,14 +72,6 @@ class Screen:
         b = self.bezel.width_mm
         w, h = self.size_mm
         return -b, -b, w + b, h + b
-
-    @property
-    def unlit_radiance(self) -> float:
-        return self.reflectance * self.ambient
-
-    @property
-    def wall_radiance(self) -> float:
-        return self.wall_reflectance * self.ambient
 
 
 @dataclass(frozen=True)
@@ -116,7 +108,7 @@ class ScreenGrid:
         ox, oy = self.origin_mm
         return ox + (np.asarray(cols) + 0.5) / s, oy + (np.asarray(rows) + 0.5) / s
 
-    def centers_mm(self) -> np.ndarray:
+    def centres_mm(self) -> np.ndarray:
         """(rows, cols, 2) array of every grid pixel centre in mm."""
         x, y = self.to_mm(np.arange(self.shape[0])[:, None], np.arange(self.shape[1])[None, :])
         return np.stack(np.broadcast_arrays(x, y), axis=-1)
@@ -125,60 +117,62 @@ class ScreenGrid:
         """Grid rows/cols (r0, r1, c0, c1) covering a polygon's bounding box, padded, clipped."""
         g = (np.asarray(poly_mm, dtype=np.float64) - np.asarray(self.origin_mm)) * self.px_per_mm - 0.5
         rows, cols = self.shape
-        c0 = max(0, int(math.floor(g[:, 0].min())) - pad_px)
-        c1 = min(cols, int(math.ceil(g[:, 0].max())) + pad_px + 1)
-        r0 = max(0, int(math.floor(g[:, 1].min())) - pad_px)
-        r1 = min(rows, int(math.ceil(g[:, 1].max())) + pad_px + 1)
+        c0 = max(0, math.floor(g[:, 0].min()) - pad_px)
+        c1 = min(cols, math.ceil(g[:, 0].max()) + pad_px + 1)
+        r0 = max(0, math.floor(g[:, 1].min()) - pad_px)
+        r1 = min(rows, math.ceil(g[:, 1].max()) + pad_px + 1)
         return r0, r1, c0, c1
 
-    def coverage(self, lo_mm: float, hi_mm: float, axis: int, start: int = 0, stop: int | None = None) -> np.ndarray:
-        """Fraction of each grid column (axis 0, x) or row (axis 1, y) in [start, stop) inside [lo, hi] mm."""
-        n = self.shape[1 - axis]
+    def coverage(self, lo_mm: float, hi_mm: float, axis: Literal["x", "y"], start: int = 0,
+                 stop: int | None = None) -> np.ndarray:
+        """Fraction of each grid column (axis "x") or row ("y") in [start, stop) inside [lo, hi] mm."""
+        i = {"x": 0, "y": 1}[axis]
+        n = self.shape[1 - i]
         stop = n if stop is None else stop
         s = self.px_per_mm
-        edge = self.origin_mm[axis] + np.arange(start, stop, dtype=np.float64) / s
+        edge = self.origin_mm[i] + np.arange(start, stop, dtype=np.float64) / s
         return np.clip((np.minimum(edge + 1.0 / s, hi_mm) - np.maximum(edge, lo_mm)) * s, 0.0, 1.0)
 
     def rect_coverage(self, rect_mm: tuple[float, float, float, float]) -> tuple[slice, slice, np.ndarray]:
         """Exact area fraction (float32) of each grid pixel inside an axis-aligned rect, on its padded window."""
         x0, y0, x1, y1 = rect_mm
         r0, r1, c0, c1 = self.window(np.array([[x0, y0], [x1, y1]]), pad_px=1)
-        cy = self.coverage(y0, y1, 1, r0, r1).astype(np.float32)
-        cx = self.coverage(x0, x1, 0, c0, c1).astype(np.float32)
+        cy = self.coverage(y0, y1, "y", r0, r1).astype(np.float32)
+        cx = self.coverage(x0, x1, "x", c0, c1).astype(np.float32)
         return slice(r0, r1), slice(c0, c1), np.outer(cy, cx)
 
 
 def surfaces(grid: ScreenGrid, screen: Screen) -> tuple[np.ndarray, np.ndarray]:
-    """Reflectance map (screen, bezel, wall) and bezel-lamp mask on `grid`, both (rows, cols) float32.
+    """Reflectance map (screen, bezel, wall) and bezel-light mask on `grid`, both (rows, cols) float32.
 
     Exact area coverage: refl = rho_wall (1 - c_extent) + rho_bezel (c_extent - c_screen)
     + rho_screen c_screen, with c the area fraction of each grid pixel inside that rectangle.
-    The lamp mask is c_extent - c_screen: where the bezel's own lamp shines.
+    The bezel-light mask is c_extent - c_screen: where the bezel's own light shines.
     """
     w, h = screen.size_mm
     refl = np.full(grid.shape, screen.bezel.reflectance, dtype=np.float32)
-    lamp = np.ones(grid.shape, dtype=np.float32)
+    light = np.ones(grid.shape, dtype=np.float32)
     rs, cs, cov = grid.rect_coverage((0.0, 0.0, w, h))
     refl[rs, cs] += np.float32(screen.reflectance - screen.bezel.reflectance) * cov
-    lamp[rs, cs] -= cov
+    light[rs, cs] -= cov
     # Beyond the extent is wall. A grid built on the extent has at most its last row and column
     # partly outside, so only rows and columns with coverage e below 1 are touched. So far such a
     # pixel holds screen (refl - bezel is the screen's share, exactly 0 where there is none) and
     # bezel for the rest; the part outside the extent becomes wall:
-    #     refl = (refl - bezel) + bezel e + wall (1 - e),    lamp = (lamp - 1) + e.
+    #     refl = (refl - bezel) + bezel e + wall (1 - e),    light = (light - 1) + e.
     x0, y0, x1, y1 = screen.extent_mm
-    cy, cx = grid.coverage(y0, y1, 1), grid.coverage(x0, x1, 0)
+    cy, cx = grid.coverage(y0, y1, "y"), grid.coverage(x0, x1, "x")
     wall, bezel, one = np.float32(screen.wall_reflectance), np.float32(screen.bezel.reflectance), np.float32(1.0)
     for r in np.nonzero(cy < 1.0)[0]:
         e = (cy[r] * cx).astype(np.float32)
         refl[r] = (refl[r] - bezel) + (bezel * e + wall * (one - e))
-        lamp[r] = (lamp[r] - one) + e
+        light[r] = (light[r] - one) + e
     full_rows = np.nonzero(cy >= 1.0)[0]
     for c in np.nonzero(cx < 1.0)[0]:
         e = np.float32(cx[c])
         refl[full_rows, c] = (refl[full_rows, c] - bezel) + (bezel * e + wall * (one - e))
-        lamp[full_rows, c] = (lamp[full_rows, c] - one) + e
-    return refl, lamp
+        light[full_rows, c] = (light[full_rows, c] - one) + e
+    return refl, light
 
 
 def from_config(cfg: Mapping[str, Any]) -> Screen:

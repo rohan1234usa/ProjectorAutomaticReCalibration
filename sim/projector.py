@@ -18,11 +18,11 @@ Physics, in the order light goes through it:
    plus lens blur by bilinear interpolation between neighbouring pixels, a "tent" one pixel
    wide on each side. That puts the raster's 50% edge exactly on the box edge and represents
    sub-pixel shifts smoothly.
-5. Light is conserved. A pixel emits a fixed amount of light. If the projector is zoomed or
-   tilted so the pixel's footprint grows, the same light spreads over more area and the
-   irradiance drops. Irradiance at calibration is the reference (``brightness``). After a
-   perturbation it is scaled by |det J_cal| / |det J_actual|, the ratio of footprint areas,
-   which is exact for a homography.
+5. Light is conserved. Each pixel's light output stays what it was at calibration, where the
+   irradiance it gives is the reference (``brightness``, uniform as if the projector's own
+   uniformity correction had flattened it). If the projector is then zoomed or tilted so a
+   pixel's footprint grows, the same light spreads over more area and the irradiance drops, by
+   |det J_cal| / |det J_actual|, the ratio of footprint areas, which is exact for a homography.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from typing import Any
 import numpy as np
 
 from sim.cfg import check_keys, num, pair
-from sim.planar import box_mm, jacobian_det, raster_corners, translation, warp_linear
+from sim.planar import box_mm, jacobian_det, local_scale, raster_corners, scratch, translation, warp_linear
 from sim.screen import ScreenGrid
 
 _KEYS = {"resolution", "gamma", "brightness", "black_level", "color_balance"}
@@ -53,10 +53,15 @@ class Projector:
     color_balance: tuple[float, float, float] = (1.0, 1.0, 1.0)
 
     def __post_init__(self) -> None:
-        if min(self.resolution) < 1 or self.gamma <= 0 or self.brightness <= 0:
-            raise ValueError(f"projector {self.name}: bad resolution, gamma or brightness")
-        if not 0 <= self.black_level < 1 or len(self.color_balance) != 3 or min(self.color_balance) <= 0:
-            raise ValueError(f"projector {self.name}: need 0 <= black_level < 1 and 3 positive color gains")
+        if min(self.resolution) < 1:
+            raise ValueError(f"projector {self.name}: resolution must be positive, got {self.resolution}")
+        if self.gamma <= 0 or self.brightness <= 0:
+            raise ValueError(f"projector {self.name}: gamma and brightness must be positive, "
+                             f"got {self.gamma} and {self.brightness}")
+        if not 0 <= self.black_level < 1:
+            raise ValueError(f"projector {self.name}: black_level must be in [0, 1), got {self.black_level}")
+        if len(self.color_balance) != 3 or min(self.color_balance) <= 0:
+            raise ValueError(f"projector {self.name}: color_balance needs 3 positive gains, got {self.color_balance}")
 
     def emitted_light(self, framebuffer: np.ndarray, blend: np.ndarray, mono: bool = True) -> np.ndarray:
         """Irradiance each pixel puts on the screen at the calibrated geometry, float32.
@@ -88,11 +93,15 @@ def area_ratio(h_cal: np.ndarray, h_actual: np.ndarray, resolution: tuple[int, i
     return (np.abs(jacobian_det(h_cal, u, v)) / np.abs(jacobian_det(h_actual, u, v))).astype(np.float32)
 
 
-def project(light: np.ndarray, h_cal: np.ndarray, h_actual: np.ndarray, grid: ScreenGrid, out: np.ndarray) -> None:
+def project(
+    light: np.ndarray, h_cal: np.ndarray, h_actual: np.ndarray, grid: ScreenGrid, out: np.ndarray,
+    workspace: dict | None = None,
+) -> tuple[int, int, int, int] | None:
     """Add one projector's irradiance onto the screen grid `out` ((rows, cols) or (rows, cols, 3)), in place.
 
     `h_actual` is where the projector's pixels really land now. When aligned it equals `h_cal`;
-    a drift changes only `h_actual`, because the framebuffer was built for `h_cal`.
+    a drift changes only `h_actual`, because the framebuffer was built for `h_cal`. Returns the
+    grid window (r0, r1, c0, c1) that was written, or None if the box misses the grid.
     """
     h, w = light.shape[:2]
     if not np.array_equal(h_actual, h_cal):
@@ -101,13 +110,15 @@ def project(light: np.ndarray, h_cal: np.ndarray, h_actual: np.ndarray, grid: Sc
     # Bilinear reconstruction spreads light half a projector pixel past the box edge, so the
     # window must reach that far for this projector's largest pixel (|det J| peaks at a corner).
     u, v = raster_corners((w, h)).T
-    max_pitch_mm = float(np.sqrt(np.abs(jacobian_det(h_actual, u, v)).max()))
+    max_pitch_mm = float(local_scale(h_actual, u, v).max())
     pad = math.ceil(0.5 * max_pitch_mm * grid.px_per_mm) + 2
     r0, r1, c0, c1 = grid.window(box_mm(h_actual, (w, h)), pad_px=pad)
     if r1 <= r0 or c1 <= c0:
-        return
+        return None
     m = translation(-c0, -r0) @ grid.mm_to_grid @ h_actual
-    out[r0:r1, c0:c1] += warp_linear(light, m, (c1 - c0, r1 - r0))
+    window = scratch(workspace, "window", (r1 - r0, c1 - c0, *light.shape[2:]))
+    out[r0:r1, c0:c1] += warp_linear(light, m, (c1 - c0, r1 - r0), dst=window)
+    return r0, r1, c0, c1
 
 
 def from_config(cfg: Any) -> dict[str, Projector]:

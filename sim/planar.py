@@ -1,5 +1,7 @@
 """Planar geometry for the simulator: homographies, convex polygons, and the one image warp.
 
+(Also the scratch buffers that the warp and its callers reuse between frames.)
+
 Everything here happens on a flat screen. Any mapping between two flat views of it -- projector
 pixels to screen millimetres, screen millimetres to camera pixels -- is therefore a
 *homography*: a 3x3 matrix that maps straight lines to straight lines. A projector's lit
@@ -71,7 +73,7 @@ def homography_from_points(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
     s, d = apply_h(ts, src), apply_h(td, dst)
     a = np.zeros((8, 8))
     b = np.zeros(8)
-    for i, ((x, y), (u, v)) in enumerate(zip(s, d)):
+    for i, ((x, y), (u, v)) in enumerate(zip(s, d, strict=True)):
         a[2 * i] = [x, y, 1.0, 0.0, 0.0, 0.0, -u * x, -u * y]
         a[2 * i + 1] = [0.0, 0.0, 0.0, x, y, 1.0, -v * x, -v * y]
         b[2 * i], b[2 * i + 1] = u, v
@@ -89,6 +91,21 @@ def jacobian_det(h: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
     """Local area magnification of homography `h` at (u, v): det(H) / w^3, w = h31 u + h32 v + h33."""
     w = h[2, 0] * u + h[2, 1] * v + h[2, 2]
     return np.linalg.det(h) / w**3
+
+
+def local_scale(h: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Local linear scale of `h` at (u, v): the side of the image of a unit square, sqrt|det J|."""
+    return np.sqrt(np.abs(jacobian_det(h, u, v)))
+
+
+def is_vertical(poly: np.ndarray) -> bool:
+    """True if the polygon's bounding box is at least as tall as it is wide (a side-by-side overlap).
+
+    The marker layout and the zoomed camera both orient themselves by this one rule, so they
+    always agree on where the overlap's ends are.
+    """
+    lo, hi = np.min(poly, axis=0), np.max(poly, axis=0)
+    return bool(hi[1] - lo[1] >= hi[0] - lo[0])
 
 
 def signed_area(poly: np.ndarray) -> float:
@@ -126,11 +143,10 @@ def is_convex(poly: np.ndarray) -> bool:
 def edge_offsets(poly: np.ndarray, pts: np.ndarray) -> np.ndarray:
     """Signed distance of each point to each edge's line, positive inside: shape (..., n_edges)."""
     p = oriented(poly)
-    a = p
     e = np.roll(p, -1, axis=0) - p
     length = np.hypot(e[:, 0], e[:, 1])
     q = np.asarray(pts, dtype=np.float64)[..., None, :]
-    return (e[:, 0] * (q[..., 1] - a[:, 1]) - e[:, 1] * (q[..., 0] - a[:, 0])) / length
+    return (e[:, 0] * (q[..., 1] - p[:, 1]) - e[:, 1] * (q[..., 0] - p[:, 0])) / length
 
 
 def points_in_convex(poly: np.ndarray, pts: np.ndarray, margin: float = 0.0) -> np.ndarray:
@@ -191,14 +207,30 @@ def boundary_distance(poly: np.ndarray, pts: np.ndarray) -> np.ndarray:
     return distance_to_segments(pts, edges(np.asarray(poly, dtype=np.float64)))
 
 
+def scratch(workspace: dict | None, name: str, shape: tuple[int, ...]) -> np.ndarray | None:
+    """A reusable float32 buffer of `shape` kept in `workspace` (None without a workspace).
+
+    Rendering makes several grid- and sensor-sized temporaries per frame (hundreds of MB).
+    Allocating them afresh each time costs page faults, which stall parallel workers; reusing
+    buffers changes no value, because every operation writes all of its output.
+    """
+    if workspace is None:
+        return None
+    buf = workspace.get(name)
+    if buf is None or buf.shape != tuple(shape):
+        buf = workspace[name] = np.empty(shape, dtype=np.float32)
+    return buf
+
+
 def warp_linear(
-    src: np.ndarray, m: np.ndarray, dsize: tuple[int, int], *, inverse: bool = False, border: float = 0.0
+    src: np.ndarray, m: np.ndarray, dsize: tuple[int, int], *, inverse: bool = False, border: float = 0.0,
+    dst: np.ndarray | None = None,
 ) -> np.ndarray:
     """Bilinear perspective warp; `m` maps src -> dst pixel coordinates (dst -> src if `inverse`).
 
     Only float32 images with 1, 3 or 4 channels are accepted: for those OpenCV 5 interpolates at
     the exact sub-pixel position, while other types are rounded to 1/32 px -- a hidden error as
-    large as 1/8 of the smallest shift the evaluation sweeps.
+    large as 1/8 of the smallest shift the evaluation sweeps. `dst`, if given, receives the result.
     """
     if src.dtype != np.float32:
         raise TypeError(f"warp_linear needs float32 input, got {src.dtype}")
@@ -207,6 +239,6 @@ def warp_linear(
         raise ValueError(f"warp_linear needs an (h, w), (h, w, 3) or (h, w, 4) image, got {src.shape}")
     flags = cv2.INTER_LINEAR | (cv2.WARP_INVERSE_MAP if inverse else 0)
     return cv2.warpPerspective(
-        src, np.asarray(m, dtype=np.float64), (int(dsize[0]), int(dsize[1])),
+        src, np.asarray(m, dtype=np.float64), (int(dsize[0]), int(dsize[1])), dst=dst,
         flags=flags, borderMode=cv2.BORDER_CONSTANT, borderValue=(border,) * 4,
     )

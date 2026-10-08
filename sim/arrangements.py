@@ -10,10 +10,12 @@ follows from its width and the projector's resolution. Every pair is centred on 
 The content rect is the rectangle of screen the calibration software fills with the picture.
 It must lie inside what the projectors cover, or part of the picture would land on nothing.
 For axis-aligned boxes the largest such rectangle is written down exactly. For a rotated
-projector it is found by a conservative search over 1 mm vertical strips: each box is convex,
-so within a strip its top and bottom edges are straight and their extremes sit at the strip's
-sides. The corner arrangement uses the union's bounding box instead: no rectangle inside its
-L-shaped union crosses the overlap usefully, and content outside both boxes simply goes unlit.
+projector it is found by a conservative search over 1 mm vertical strips: a convex box's top
+edge is a convex function of x and its bottom edge a concave one, so within a strip the lowest
+top and the highest bottom (what limits a rectangle there) sit at the strip's sides. The corner
+arrangement uses the union's bounding box instead: the union is a staircase of two offset
+boxes, no rectangle inside it crosses the overlap usefully, and content outside both boxes
+simply goes unlit.
 """
 
 from __future__ import annotations

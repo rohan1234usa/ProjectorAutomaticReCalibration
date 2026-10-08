@@ -1,7 +1,9 @@
 # Question: how often is the boundary unavailable, and does the overlap check catch what the
 # boundary cannot? Letterboxed photos and video: bars hide the content border at the top and
-# bottom, so only the faint black level shows those raster edges, while the bright overlap hides
-# the inner edges. An aligned twin and a 2 px shift across at 615 s.
+# bottom, so only the faint black level shows those raster edges. The bars also cross the
+# overlap, so the inner edges still show through black level there: docs/findings.md
+# (2026-10-07, 2b item 8) predicts the boundary stays visible, to check in Phase 4. An aligned
+# twin and a 2 px shift across at 615 s.
 extends: _lecture_hall.yaml
 name: boundary_hidden
 seed: 101

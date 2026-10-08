@@ -9,11 +9,13 @@ A dataset directory holds:
                    state, and the sha256 of the frame's 16-bit pixels. Only the evaluation
                    harness reads it.
   frames/          optional 16-bit PNGs (about 8 MB each at 3840 x 1600)
-  dataset.json     variant, scenario hash, library versions and platform
+  dataset.json     variant, scenario hash, the code's commit (and whether sim/ had uncommitted
+                   changes), library versions and platform
   timing.json      how long it took (not reproducible, so kept apart)
 
 Frames are written only on request, because any frame can be re-rendered from scenario.yaml
-(``sim/frames.py``), and the stored hash proves the re-rendered frame is the one described.
+(``sim/frames.py``). With ``--frames sample`` or ``all`` the stored hash proves the re-rendered
+frame is the one described; ``--frames none`` stores no hash, so nothing can be checked.
 Determinism: metadata is written with sorted keys and Python's shortest exact float repr, so two
 runs give byte-identical files. Pixel hashes depend on the machine and OpenCV build, which is
 why dataset.json records them.
@@ -58,14 +60,21 @@ def dumps(obj: Any, indent: int | None = None) -> str:
     return json.dumps(obj, sort_keys=True, separators=separators, allow_nan=False, indent=indent)
 
 
-def environment() -> dict[str, Any]:
+def _git(*args: str) -> str | None:
+    """A git command's output, run in sim/ (so pathspec "." means the simulator); None outside a checkout."""
     try:
-        commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
-                                cwd=Path(__file__).resolve().parent).stdout.strip()
+        return subprocess.run(["git", *args], capture_output=True, text=True, check=True,
+                              cwd=Path(__file__).resolve().parent).stdout
     except (OSError, subprocess.CalledProcessError):
-        commit = None
+        return None
+
+
+def environment() -> dict[str, Any]:
+    """What made the dataset: the commit, whether sim/ differed from it, library versions, platform."""
+    commit, changes = _git("rev-parse", "HEAD"), _git("status", "--porcelain", "--", ".")
     return {
-        "git_commit": commit,
+        "git_commit": None if commit is None else commit.strip(),
+        "git_dirty": None if changes is None else bool(changes.strip()),
         "python": sys.version.split()[0],
         "numpy": np.__version__,
         "opencv": cv2.__version__,
@@ -114,6 +123,18 @@ def _init_worker(threads: int) -> None:
     cv2.setNumThreads(threads)
 
 
+def process_pool(jobs: int) -> ProcessPoolExecutor:
+    """`jobs` fresh worker processes ("spawn": nothing inherited), sharing the CPU's threads between them."""
+    threads = max(1, (os.cpu_count() or 1) // jobs)
+    context = multiprocessing.get_context("spawn")
+    return ProcessPoolExecutor(jobs, mp_context=context, initializer=_init_worker, initargs=(threads,))
+
+
+def write_variant(data: dict[str, Any], variant: str, out_dir: str, frames: str, every: int, jobs: int = 1) -> dict[str, Any]:
+    """:func:`write_dataset` for a variant given as its resolved data (picklable, for worker processes)."""
+    return write_dataset(scenario_from_dict(data, variant=variant), out_dir, frames=frames, every=every, jobs=jobs)
+
+
 def write_dataset(
     scenario: Scenario,
     out_dir: str | Path,
@@ -131,6 +152,8 @@ def write_dataset(
     """
     if frames not in FRAME_MODES:
         raise ValueError(f"frames must be one of {FRAME_MODES}, got {frames!r}")
+    if every < 1:
+        raise ValueError(f"every must be at least 1, got {every}")
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
@@ -146,9 +169,7 @@ def write_dataset(
     else:
         bounds = [round(k * n / jobs) for k in range(jobs + 1)]
         parts = [out / f"metadata.part{k}.jsonl" for k in range(jobs)]
-        threads = max(1, (os.cpu_count() or 1) // jobs)
-        context = multiprocessing.get_context("spawn")
-        with ProcessPoolExecutor(jobs, mp_context=context, initializer=_init_worker, initargs=(threads,)) as pool:
+        with process_pool(jobs) as pool:
             futures = [pool.submit(_write_part, scenario.data, scenario.variant, str(out), frames, every,
                                    bounds[k], bounds[k + 1], str(parts[k])) for k in range(jobs)]
             results = [f.result() for f in futures]
@@ -176,7 +197,10 @@ def write_dataset(
 
 @dataclass(eq=False)
 class Dataset:
-    """A dataset on disk. Frames come from the PNGs when present, else are re-rendered and checked."""
+    """A dataset on disk. Frames come from the PNGs when present, else are re-rendered.
+
+    Either way a frame is checked against its recorded hash, when the dataset has one.
+    """
 
     path: Path
     setup: dict[str, Any]
@@ -196,7 +220,10 @@ class Dataset:
     def frame(self, i: int) -> np.ndarray:
         line = self.metadata[i]
         if line.get("png"):
-            frame = cv2.imread(str(self.path / line["png"]), cv2.IMREAD_UNCHANGED)
+            png = self.path / line["png"]
+            frame = cv2.imread(str(png), cv2.IMREAD_UNCHANGED)
+            if frame is None:
+                raise FileNotFoundError(f"{png}: frame {i}'s PNG is missing or unreadable")
             frame = frame if frame.ndim == 2 else frame[..., ::-1]
         else:
             frame = self.source().frame(i)

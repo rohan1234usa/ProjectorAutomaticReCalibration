@@ -8,7 +8,7 @@ physical reason.
 import numpy as np
 import pytest
 
-from sim.content import flat, make_content
+from sim.content import flat, slide
 from sim.planar import homography_from_points, raster_corners, rect_polygon, translation, warp_linear
 from sim.projector import REC709, project
 from sim.screen import ScreenGrid
@@ -26,7 +26,7 @@ from tests.scenes import (
 
 def _overlap_width_px(setup) -> float:
     box_a, box_b = setup.box_mm("a"), setup.box_mm("b")
-    return (box_a[:, 0].max() - box_b[:, 0].min()) / setup.pixel_pitch_mm("a")
+    return (box_a[:, 0].max() - box_b[:, 0].min()) / setup.finest_pitch_mm("a")
 
 
 @pytest.mark.parametrize("quality", ["fast", "standard"])
@@ -76,9 +76,9 @@ def test_rotated_and_corner_overlaps_are_seamless_away_from_notches(make):
     r = make_renderer(setup, black_level=0.0, ambient=0.0)
     irr = r.screen_irradiance(flat(setup.content_size(), 1.0))
     masks = grid_masks(setup, r.grid, margin_px=3 * r.quality.screen_samples_per_px)
-    pts = r.grid.centers_mm()
+    pts = r.grid.centres_mm()
     notch_px = np.min([np.hypot(*(pts - v).transpose(2, 0, 1)) for v in notch_points(setup)], axis=0)
-    notch_px /= setup.pixel_pitch_mm("a")
+    notch_px /= setup.finest_pitch_mm("a")
     err = np.abs(irr - 1.0)
     assert err[masks["union"] & (notch_px > 8)].max() < 8e-3
     assert notch_px[masks["union"] & (err > 0.01)].max(initial=0.0) < 6.0
@@ -103,7 +103,7 @@ def test_overlap_adds_exactly_one_black_level():
     assert np.allclose(only_a, only_b, atol=1e-7)
 
 
-@pytest.mark.parametrize("quality, edge_tol_mm", [("fast", 0.05), ("standard", 0.02)])
+@pytest.mark.parametrize("quality, edge_tol_mm", [("fast", 0.05), ("standard", 0.02), ("fine", 0.02)])
 def test_black_content_shows_each_raster(quality, edge_tol_mm):
     """With black content each raster glows at its black level. Its 50% edge sits on the box edge."""
     setup = side_by_side_setup()
@@ -181,7 +181,7 @@ def test_aligned_slide_blend_adds_no_error_and_misalignment_does():
     setup = side_by_side_setup()
     r = make_renderer(setup, black_level=0.0, ambient=0.0)
     size = setup.content_size()
-    content = make_content({"type": "slide"}, size, np.random.default_rng(3))
+    content = slide(size, np.random.default_rng(3))
     grid: ScreenGrid = r.grid
     to_content = np.linalg.inv(setup.content_to_mm(size)) @ np.linalg.inv(grid.mm_to_grid)
     linear = np.power(warp_linear(content, to_content, grid.shape[::-1], inverse=True), 2.2)
@@ -193,7 +193,7 @@ def test_aligned_slide_blend_adds_no_error_and_misalignment_does():
 
     blended = overlap_error(r.screen_radiance(content))
     alone = max(overlap_error(_alone(r, n, content)) for n in setup.names)
-    shifted = overlap_error(r.screen_radiance(content, {"b": translation(setup.pixel_pitch_mm("b"), 0) @ setup.h_cal["b"]}))
+    shifted = overlap_error(r.screen_radiance(content, {"b": translation(setup.finest_pitch_mm("b"), 0) @ setup.h_cal["b"]}))
     assert blended <= 1.02 * alone
     assert shifted > 2.5 * blended
 

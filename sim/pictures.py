@@ -22,9 +22,9 @@ Options for every kind:
   blank_overlap  a flat value (or true for 0.5) inside the calibrated overlap: nothing textured
                  there, so the echo test is blind and the hotspot fit and the boundary must work
 
-The overlap and the screen scale come from the installation (:class:`ContentGeometry`); the
-detector learns neither from the pictures. Slides, flat fields and black are drawn exactly as
-``sim/content.py`` draws them, so earlier datasets stay bit-identical.
+The overlap, the screen scale and the gamma come from the installation (:class:`ContentGeometry`);
+the detector learns none of them from the pictures. Every kind is drawn inside the same black
+border (:func:`sim.content.framed`).
 """
 
 from __future__ import annotations
@@ -36,9 +36,9 @@ from typing import Any
 
 import numpy as np
 
-from sim import textures
-from sim.cfg import check_keys, choice, integer, num, pair, seconds
-from sim.content import DENSITIES, border_px, make_content
+from sim import content, textures
+from sim.cfg import check_keys, choice, integer, num, pair, rational, seconds
+from sim.content import DENSITIES
 from sim.planar import clip_convex, rect_polygon
 from sim.video import STYLES, Clip, VideoFrames
 
@@ -63,6 +63,7 @@ class ContentGeometry:
 
     px_per_mm: float  # content pixels per screen millimetre
     overlap_px: np.ndarray  # the calibrated overlap ∩ content rect, as a polygon in content pixels
+    gamma: float  # projector A's: stripes are encoded with it (content is encoded once for both)
 
 
 @dataclass(frozen=True)
@@ -104,16 +105,19 @@ def parse(cfg: Mapping[str, Any], where: str, default_hold: Fraction, geometry: 
     check_keys(cfg, _KEYS[kind], where)
     options: dict[str, Any] = {"border_frac": num(cfg.get("border_frac", 0.0), f"{where}.border_frac"),
                                "letterbox": num(cfg.get("letterbox", 0.0), f"{where}.letterbox")}
-    if not 0 <= options["letterbox"] < 0.5:
-        raise ValueError(f"{where}.letterbox: must be in [0, 0.5)")
+    for key in ("border_frac", "letterbox"):
+        if not 0 <= options[key] < 0.5:
+            raise ValueError(f"{where}.{key}: must be in [0, 0.5)")
     blank = cfg.get("blank_overlap", None)
     if blank is not None and blank is not False:
         options["blank_overlap"] = 0.5 if blank is True else num(blank, f"{where}.blank_overlap")
     if kind == "video":
-        fps = seconds(cfg.get("fps", 30), f"{where}.fps")
+        fps = rational(cfg.get("fps", 30), f"{where}.fps", "a frame rate (frames per second)")
+        if fps <= 0:
+            raise ValueError(f"{where}.fps: must be positive")
         duration = seconds(cfg["duration_s"], f"{where}.duration_s") if "duration_s" in cfg else default_hold
         frames = duration * fps
-        if fps <= 0 or frames < 1 or frames.denominator != 1:
+        if frames < 1 or frames.denominator != 1:
             raise ValueError(f"{where}: duration_s x fps must be a whole number of frames")
         cut = cfg.get("cut_s", 8)
         clip = Clip(
@@ -125,6 +129,10 @@ def parse(cfg: Mapping[str, Any], where: str, default_hold: Fraction, geometry: 
             fade_s=seconds(cfg.get("fade_s", 0), f"{where}.fade_s"),
             style=choice(cfg.get("style", "photo"), tuple(STYLES), f"{where}.style"),
         )
+        if clip.cut_s is not None and clip.cut_s <= 0:
+            raise ValueError(f"{where}.cut_s: must be positive, or null for one scene")
+        if clip.fade_s < 0 or (clip.fade_s > 0 and clip.cut_s is None):
+            raise ValueError(f"{where}.fade_s: scenes fade at their cuts; needs fade_s >= 0 and cut_s set")
         return Item(kind, 1 / fps, int(frames), clip=clip, **options)
     hold = seconds(cfg["hold_s"], f"{where}.hold_s") if "hold_s" in cfg else default_hold
     if hold <= 0:
@@ -160,31 +168,25 @@ def parse(cfg: Mapping[str, Any], where: str, default_hold: Fraction, geometry: 
 def draw(item: Item, index: int, rng: np.random.Generator, size: tuple[int, int], geometry: ContentGeometry,
          video: VideoFrames | None = None) -> np.ndarray:
     """Picture `index` of `item` at content `size`, (h, w, 3) code values in [0, 1]."""
-    if item.kind in ("deck", "held", "flat", "black"):
-        cfg: dict[str, Any] = {"border_frac": item.border_frac}
+
+    def picture(inner: tuple[int, int]) -> np.ndarray:
         if item.kind in ("deck", "held"):
-            cfg.update(type="slide", density=item.density(index))
-        elif item.kind == "flat":
-            cfg.update(type="flat", value=item.value)
-        else:
-            cfg.update(type="black")
-        img = make_content(cfg, size, rng)  # exactly as in Phase 2a
-    else:
-        w, h = size
-        b = border_px({"border_frac": item.border_frac}, size)
-        inner = (w - 2 * b, h - 2 * b)
+            return content.slide(inner, rng, item.density(index))
+        if item.kind == "flat":
+            return content.flat(inner, item.value)
+        if item.kind == "black":
+            return content.black(inner)
         if item.kind == "photo":
-            picture = textures.photo(inner, rng)
-        elif item.kind == "dark":
-            picture = textures.dark(inner, rng)
-        elif item.kind == "stripes":
-            picture = textures.stripes(inner, *item.stripes, phase=float(rng.uniform(0, 2 * np.pi)))
-        else:
-            picture = video.frame(index)
-        img = np.zeros((h, w, 3), dtype=np.float32)
-        img[b : h - b, b : w - b] = picture
+            return textures.photo(inner, rng)
+        if item.kind == "dark":
+            return textures.dark(inner, rng)
+        if item.kind == "stripes":
+            return textures.stripes(inner, *item.stripes, phase=float(rng.uniform(0, 2 * np.pi)), gamma=geometry.gamma)
+        return video.frame(index)
+
+    img = content.framed(size, item.border_frac, picture)
     w, h = size
-    border = border_px({"border_frac": item.border_frac}, size)
+    border = content.border_px(item.border_frac, size)
     bar = max(border, round(item.letterbox * h))
     if item.blank_overlap is not None:  # flat only where the picture is: not over its border or bars
         area = rect_polygon(border - 0.5, bar - 0.5, w - border - 0.5, h - bar - 0.5)
@@ -198,6 +200,4 @@ def draw(item: Item, index: int, rng: np.random.Generator, size: tuple[int, int]
 
 def video_frames(item: Item, item_index: int, size: tuple[int, int], seed: int) -> VideoFrames:
     """The frame source for a video item, at the picture size inside its border."""
-    w, h = size
-    b = border_px({"border_frac": item.border_frac}, size)
-    return VideoFrames(item.clip, (w - 2 * b, h - 2 * b), seed, (item_index,))
+    return VideoFrames(item.clip, content.inner_size(size, item.border_frac), seed, (item_index,))

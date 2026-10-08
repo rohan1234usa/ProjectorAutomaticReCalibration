@@ -16,7 +16,7 @@ from sim.frames import FrameSource
 from sim.planar import apply_h, rect_polygon
 from sim.scenario import load_scenario, load_scenarios, scenario_from_dict
 from sim.screen import Bezel, Screen, ScreenGrid
-from tests.markers import centre_of, detect, edge_lines, to_8bit
+from tests.markers import centre_of, detect, refined_corners, to_8bit
 from tests.scenes import TINY_BEZEL
 
 REPO = Path(__file__).resolve().parents[1]
@@ -62,19 +62,24 @@ def test_paint_is_exact_area_coverage():
         assert refl.min() >= 0.04 - 1e-6 and refl.max() <= 0.8 + 1e-6
 
 
-def _measure(scenario, frames: list[int]) -> tuple[list[list[int]], np.ndarray]:
-    """Ids found in each frame, and every found marker's centre error in camera px."""
+def _measure(scenario, frames: list[int], subpix: bool = False) -> tuple[list[list[int]], np.ndarray]:
+    """Ids found in each frame, and every found marker's centre error in camera px.
+
+    Centres come from edge-line fits (tests/markers.py), or with `subpix` from ArUco's own
+    sub-pixel corners.
+    """
     source = FrameSource(scenario)
     camera, markers, screen = scenario.scene.camera, scenario.scene.markers, scenario.scene.screen
     paper_e = markers.paper * screen.ambient * camera.electrons_per_unit_radiance
     ids, errors = [], []
     for i in frames:
         electrons = camera.decode(source.frame(i))
-        found = detect(to_8bit(electrons, paper_e))
+        found = detect(to_8bit(electrons, paper_e), subpix=subpix)
         ids.append(sorted(found))
         for k, corners in found.items():
             truth = apply_h(camera.h_mm_to_px, np.array(markers.centres_mm[k]))
-            errors.append(float(np.hypot(*(centre_of(edge_lines(electrons, corners)) - truth))))
+            refined = corners if subpix else refined_corners(electrons, corners)
+            errors.append(float(np.hypot(*(centre_of(refined) - truth))))
     return ids, np.array(errors)
 
 
@@ -87,6 +92,20 @@ def test_markers_found_in_a_tiny_frame():
     assert errors.max() < 0.3  # 6-px cells here; the demo camera's 11.6-px cells reach < 0.2 (slow test)
 
 
+def test_bezel_light_makes_markers_findable_in_a_dark_room():
+    """dark_room's question: at ambient 0.0003 the paper is too dim to read; light of the bezel's own fixes it."""
+    found = {}
+    for light in (0.0, 0.02):
+        cfg = copy.deepcopy(TINY_BEZEL)
+        cfg["screen"]["ambient"] = 0.0003
+        cfg["screen"]["bezel"]["light"] = light
+        scenario = scenario_from_dict(cfg)
+        camera, markers = scenario.scene.camera, scenario.scene.markers
+        paper_e = markers.paper * (0.0003 + light) * camera.electrons_per_unit_radiance
+        found[light] = sorted(detect(to_8bit(camera.decode(FrameSource(scenario).frame(0)), paper_e)))
+    assert found == {0.0: [], 0.02: list(range(8))}
+
+
 @pytest.mark.slow
 def test_markers_found_at_demo_scale():
     """The done condition: 8/8 at ambient 0.02 in single noisy frames, centre error < 0.2 px."""
@@ -94,6 +113,16 @@ def test_markers_found_at_demo_scale():
     ids, errors = _measure(scenario, [0, 1, 500, 1701, 3599])
     assert ids == [list(range(8))] * 5
     assert errors.max() < 0.2, f"centre errors: max {errors.max():.3f} px"
+
+
+@pytest.mark.slow
+def test_edge_line_centres_beat_arucos_subpixel_corners():
+    """Why tests/markers.py fits edge lines: ArUco's own sub-pixel corners miss the 0.2 px target."""
+    scenario = load_scenario(REPO / "scenarios" / "aligned_slides.yaml")
+    frames = [0, 1, 500, 1701, 3599]
+    _, edge = _measure(scenario, frames)
+    _, subpix = _measure(scenario, frames, subpix=True)
+    assert np.median(subpix) > 2 * np.median(edge) and subpix.max() > 0.2 > edge.max()
 
 
 @pytest.mark.slow

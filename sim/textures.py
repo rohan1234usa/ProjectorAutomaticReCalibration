@@ -66,21 +66,31 @@ def dark(size: tuple[int, int], rng: np.random.Generator) -> np.ndarray:
 
 
 def _soft_ellipse(img: np.ndarray, rng: np.random.Generator, value: np.ndarray, max_frac: float = 0.18) -> None:
-    """Blend an ellipse with a one-pixel soft edge into `img`, in place."""
+    """Blend an ellipse of random place, size and angle into `img`, in place."""
     h, w = img.shape[:2]
     cx, cy = rng.uniform(0, w), rng.uniform(0, h)
     ax, ay = rng.uniform(0.02, max_frac) * h, rng.uniform(0.02, max_frac) * h
-    angle = rng.uniform(0, math.pi)
-    x0, x1 = int(max(0, cx - max(ax, ay) - 2)), int(min(w, cx + max(ax, ay) + 3))
-    y0, y1 = int(max(0, cy - max(ax, ay) - 2)), int(min(h, cy + max(ax, ay) + 3))
+    blend_ellipse(img, cx, cy, ax, ay, rng.uniform(0, math.pi), value)
+
+
+def blend_ellipse(img: np.ndarray, cx: float, cy: float, ax: float, ay: float, angle: float,
+                  colour: np.ndarray) -> None:
+    """Blend an ellipse into `img` in place: centre (cx, cy), semi-axes (ax, ay) px turned by `angle`.
+
+    The edge is soft over about one pixel across the short axis (an antialiased object edge).
+    """
+    h, w = img.shape[:2]
+    reach = max(ax, ay)
+    x0, x1 = int(max(0, cx - reach - 2)), int(min(w, cx + reach + 3))
+    y0, y1 = int(max(0, cy - reach - 2)), int(min(h, cy + reach + 3))
     if x1 <= x0 or y1 <= y0:
         return
     yy, xx = np.mgrid[y0:y1, x0:x1].astype(np.float32)
     c, s = math.cos(angle), math.sin(angle)
     u, v = (xx - cx) * c + (yy - cy) * s, -(xx - cx) * s + (yy - cy) * c
     r = np.sqrt((u / ax) ** 2 + (v / ay) ** 2)
-    alpha = np.clip((1.0 - r) * min(ax, ay) + 0.5, 0.0, 1.0)[..., None]  # ~1 px soft edge
-    img[y0:y1, x0:x1] = img[y0:y1, x0:x1] * (1 - alpha) + value * alpha
+    alpha = np.clip((1.0 - r) * min(ax, ay) + 0.5, 0.0, 1.0)[..., None]
+    img[y0:y1, x0:x1] = img[y0:y1, x0:x1] * (1 - alpha) + colour * alpha
 
 
 def stripes(size: tuple[int, int], period_px: float, angle_deg: float = 0.0, low: float = 0.15,
@@ -88,7 +98,9 @@ def stripes(size: tuple[int, int], period_px: float, angle_deg: float = 0.0, low
     """A grating of `period_px` content pixels, sinusoidal in light; angle 0 = vertical stripes.
 
     `low` and `high` are the code values at the dark and bright crests; the light between them
-    follows a cosine, encoded back to code values with the projectors' `gamma`.
+    follows a cosine, encoded back to code values with `gamma`. A scenario passes projector A's
+    gamma (``sim/pictures.py``): content is encoded once for both projectors, so if B's gamma
+    differed the stripes would be sinusoidal in A's light only.
     """
     w, h = size
     t = math.radians(angle_deg)
@@ -112,14 +124,10 @@ def letterbox(picture: np.ndarray, bar_frac: float) -> np.ndarray:
     return out
 
 
-def blank_inside(picture: np.ndarray, polygon_px: np.ndarray, value: float = 0.5, margin_px: float = 0.0) -> np.ndarray:
-    """Flat `value` inside a polygon (content pixel coordinates), grown by `margin_px`, soft-edged."""
+def blank_inside(picture: np.ndarray, polygon_px: np.ndarray, value: float = 0.5) -> np.ndarray:
+    """Flat `value` inside a polygon (content pixel coordinates), with an anti-aliased edge."""
     h, w = picture.shape[:2]
     mask = np.zeros((h, w), np.uint8)
     cv2.fillPoly(mask, [np.rint(np.asarray(polygon_px) * 16).astype(np.int32)], 255, cv2.LINE_AA, shift=4)
-    alpha = mask.astype(np.float32) / 255.0
-    if margin_px > 0:
-        k = 2 * math.ceil(margin_px) + 1
-        alpha = cv2.dilate(alpha, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
-    alpha = alpha[..., None]
+    alpha = (mask.astype(np.float32) / 255.0)[..., None]
     return (picture * (1 - alpha) + np.float32(value) * alpha).astype(np.float32)

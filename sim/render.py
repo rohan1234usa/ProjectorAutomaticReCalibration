@@ -8,24 +8,27 @@ The whole physical chain in one place, in the order light travels:
 3. That light lands on the screen through the projector's *actual* geometry: the calibrated
    one when aligned, a different one after a drift. Light from both projectors adds in linear
    units on a millimetre grid of the screen and bezel, together with the room light and the
-   bezel's own lamp, times the static reflectance map (screen, bezel, marker paper and ink).
+   bezel's own light, times the static reflectance map (screen, bezel, marker paper and ink).
 4. The camera photographs it; beyond the grid it sees the wall.
 
 Components. Steps 3 and 4 are linear in light, so the camera image of the whole scene is the
 sum of the camera images of each light source alone, each times its strength:
 
-    E = ambient * E_room + lamp * E_lamp + sum_p gain_p * E_p
+    E = ambient * E_room + bezel_light * E_bezel + sum_p gain_p * E_p
 
-E_room is the image of the surfaces under unit room light (with the wall around them), E_lamp
-under the bezel's unit lamp, and E_p under projector p's light alone. Each component is rendered
-once and reused until what it depends on changes. A held slide then costs one render plus noise
-per frame, and a lamp dimming or a room-light step costs nothing. Components are always summed
-by :func:`compose` in a fixed order, so a frame is bit-identical however it was reached. Noise,
-clipping and encoding are not linear and come after the sum.
+E_room is the image of the surfaces under unit room light (with the wall around them), E_bezel
+under the bezel's own unit light, and E_p under projector p's light alone (gain_p: its lamp).
+The Renderer draws these components; ``sim/frames.py`` caches each one until what it depends on
+changes, so a held slide costs one render plus noise per frame, and a lamp dimming or a
+room-light step costs nothing. Components are always summed by :func:`compose` in a fixed order,
+so a frame is bit-identical however it was reached. Noise, clipping and encoding are not linear
+and come after the sum.
 
 Quality presets trade fidelity for speed. In ``standard`` the screen grid samples each
 projector pixel 2 x 2 times and the camera integrates over 2 x 2 sub-pixels. ``fast`` uses
-1.5 x 1.5 screen samples and a single camera sample, for tests.
+1.5 x 1.5 screen samples and a single camera sample, for tests. ``fine`` uses 3 x 3 of each, to
+check that a result does not depend on the sampling: 2.25 times the screen grid of ``standard``
+(64 rather than 28 Mpx at demo scale), and a new picture takes about 1.5 times as long.
 """
 
 from __future__ import annotations
@@ -51,6 +54,7 @@ class Quality:
 QUALITY = {
     "fast": Quality(screen_samples_per_px=1.5, camera_supersample=1),
     "standard": Quality(screen_samples_per_px=2.0, camera_supersample=2),
+    "fine": Quality(screen_samples_per_px=3.0, camera_supersample=3),
 }
 
 
@@ -102,7 +106,7 @@ class Renderer:
         self.screen, self.projectors, self.setup = screen, dict(projectors), setup
         self.camera, self.quality, self.markers = camera, quality, markers
         self.mono = camera.color == "mono"
-        pitch = min(setup.pixel_pitch_mm(n) for n in setup.names)
+        pitch = setup.finest_pitch_mm()
         self.grid = ScreenGrid.covering_extent(screen.extent_mm, quality.screen_samples_per_px / pitch)
         # The blend maps and the surfaces depend only on the installation, so they are built once.
         self.blend = {n: setup.blend_weights(n) for n in setup.names}
@@ -112,11 +116,17 @@ class Renderer:
             for name, partner in ((a, b), (b, a)):
                 level = projectors[partner].black_level * projectors[partner].brightness
                 self.uplift[name] = readonly(setup.uplift_mask(name) * np.float32(level))
-        refl, lamp = surfaces(self.grid, screen)
+        refl, bezel = surfaces(self.grid, screen)
         if markers is not None:
             paint(refl, self.grid, markers, screen.bezel.reflectance)
         self.reflectance = readonly(refl)
-        self.lamp_mask = readonly(lamp)
+        self.bezel_mask = readonly(bezel)
+        # Reused between frames (values never carry over): a zeroed grid that each projector's
+        # light is drawn into and cleared from, each projector's warp window (A's and B's differ
+        # in shape, so each keeps its own), and the camera's large temporaries.
+        self._grid_buffer: np.ndarray | None = None
+        self._project_workspace: dict[str, dict] = {n: {} for n in setup.names}
+        self._workspace: dict = {}
 
     def _per_pixel(self, a: np.ndarray) -> np.ndarray:
         """A grid map shaped to multiply a light image (with a channel axis when rendering RGB)."""
@@ -147,45 +157,48 @@ class Renderer:
         return total
 
     def screen_radiance(self, content: np.ndarray, h_actual: Mapping[str, np.ndarray] | None = None) -> np.ndarray:
-        """Radiance of every grid pixel: reflectance x (room light + bezel lamp + projectors)."""
+        """Radiance of every grid pixel: reflectance x (room light + bezel light + projectors)."""
         irr = self.screen_irradiance(content, h_actual)
         irr += np.float32(self.screen.ambient)
         if self.screen.bezel.light > 0:
-            irr += np.float32(self.screen.bezel.light) * self._per_pixel(self.lamp_mask)
+            irr += np.float32(self.screen.bezel.light) * self._per_pixel(self.bezel_mask)
         irr *= self._per_pixel(self.reflectance)
         return irr
 
     # -- camera components: expected electrons ------------------------------------------------
     def projector_electrons(self, name: str, light: np.ndarray, h_actual: np.ndarray | None, camera: Camera) -> np.ndarray:
-        """Camera image of projector `name`'s light alone (read-only)."""
-        irr = self.projector_irradiance(name, light, h_actual)
-        irr *= self._per_pixel(self.reflectance)
-        return readonly(camera.expected_electrons(irr, self.grid, self.quality.camera_supersample))
+        """Camera image of projector `name`'s light alone (read-only, a new array).
+
+        The light is drawn into a persistent zeroed grid, times the reflectance where it landed
+        (zero times reflectance is zero elsewhere), photographed, and wiped again.
+        """
+        if self._grid_buffer is None:
+            self._grid_buffer = np.zeros(self.grid.shape if self.mono else (*self.grid.shape, 3), dtype=np.float32)
+        irr = self._grid_buffer
+        h_cal = self.setup.h_cal[name]
+        window = project(light, h_cal, h_cal if h_actual is None else h_actual, self.grid, irr,
+                         self._project_workspace[name])
+        try:
+            if window is not None:
+                r0, r1, c0, c1 = window
+                irr[r0:r1, c0:c1] *= self._per_pixel(self.reflectance[r0:r1, c0:c1])
+            electrons = camera.expected_electrons(irr, self.grid, self.quality.camera_supersample,
+                                                  workspace=self._workspace)
+        finally:
+            if window is not None:
+                irr[r0:r1, c0:c1] = 0.0
+        return readonly(electrons)
 
     def room_electrons(self, camera: Camera) -> np.ndarray:
         """Camera image of the surfaces and the wall under unit room light (read-only)."""
         rad = self.reflectance if self.mono else np.repeat(self.reflectance[..., None], 3, axis=2)
         k = self.quality.camera_supersample
-        return readonly(camera.expected_electrons(rad, self.grid, k, border=self.screen.wall_reflectance))
+        return readonly(camera.expected_electrons(rad, self.grid, k, border=self.screen.wall_reflectance,
+                                                  workspace=self._workspace))
 
-    def lamp_electrons(self, camera: Camera) -> np.ndarray:
-        """Camera image of the bezel under its own unit lamp (read-only)."""
-        rad = self.reflectance * self.lamp_mask
+    def bezel_light_electrons(self, camera: Camera) -> np.ndarray:
+        """Camera image of the bezel under its own unit light (read-only)."""
+        rad = self.reflectance * self.bezel_mask
         rad = rad if self.mono else np.repeat(rad[..., None], 3, axis=2)
-        return readonly(camera.expected_electrons(rad, self.grid, self.quality.camera_supersample))
-
-    def expected_electrons(self, content: np.ndarray, h_actual: Mapping[str, np.ndarray] | None = None) -> np.ndarray:
-        """Noiseless frame of one still content image, summed from its components."""
-        terms = [(self.screen.ambient, self.room_electrons(self.camera))]
-        if self.screen.bezel.light > 0:
-            terms.append((self.screen.bezel.light, self.lamp_electrons(self.camera)))
-        for name in self.setup.names:
-            light = self.projector_light(name, content)
-            terms.append((1.0, self.projector_electrons(name, light, (h_actual or {}).get(name), self.camera)))
-        return compose(terms)
-
-    def render(
-        self, content: np.ndarray, rng: np.random.Generator, h_actual: Mapping[str, np.ndarray] | None = None
-    ) -> np.ndarray:
-        """One noisy uint16 camera frame of a still content image."""
-        return self.camera.encode(self.camera.add_noise(self.expected_electrons(content, h_actual), rng))
+        return readonly(camera.expected_electrons(rad, self.grid, self.quality.camera_supersample,
+                                                  workspace=self._workspace))
