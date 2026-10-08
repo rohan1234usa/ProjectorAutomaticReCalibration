@@ -8,7 +8,7 @@ import yaml
 
 from scripts import visualize
 from sim.planar import points_in_convex
-from sim.scenario import scene_from_dict
+from sim.scenario import scenario_from_dict
 from tests.scenes import TINY_SCENARIO
 
 
@@ -41,10 +41,11 @@ def test_visualize_writes_view_and_levels(tmp_path):
 
 
 def test_patches_sit_inside_their_true_regions_for_a_rotated_overlap():
-    scene = scene_from_dict(_rotated_tiny())
+    scenario = scenario_from_dict(_rotated_tiny())
+    scene = scenario.scene
     a, b = scene.setup.names
     box_a, box_b = scene.setup.box_mm(a), scene.setup.box_mm(b)
-    pts, masks = visualize.region_masks(scene)
+    pts, masks = visualize.region_masks(scene, visualize.border_mm(scenario))
     centre = (300.0, 130.0)
     expected = {"black_a": (True, False), "black_b": (False, True), "black_overlap": (True, True),
                 "unlit": (False, False), "overlap": (True, True), "only_a": (True, False)}

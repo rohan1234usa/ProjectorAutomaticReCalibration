@@ -1,0 +1,13 @@
+# Question: what is the false-positive rate on static, text-heavy slide decks?
+# Aligned throughout. After the 600 s trusted window come 20 minutes (40 check intervals) of slides
+# cycling through low, medium and high text density. Each slide stays up 37 s, so slide changes
+# wander through the 30 s check intervals instead of always landing at the same point in them.
+extends: _lecture_hall.yaml
+name: aligned_slides
+seed: 11
+duration_s: 1800
+content:
+  loop: true
+  items:
+    - {type: deck, densities: [low, medium, high], slides: 50, hold_s: 37, border_frac: 0.05}
+perturbation: none

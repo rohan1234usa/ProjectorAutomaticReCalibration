@@ -9,7 +9,7 @@ screen:
   size_mm: [4000, 1500]
   reflectance: 0.9
   ambient: 0.0003          # room light on the screen, in units of one projector's full white (dark room)
-  surround: 0.0001         # wall around the screen, as the camera sees it
+  wall_reflectance: 0.33   # wall around the screen, lit by the room light only
 
 arrangement:
   preset: side_by_side
@@ -34,7 +34,7 @@ camera:
   margin: 0.05
   keystone: 0.02
   psf_sigma_px: 0.8
-  exposure: 0.75           # radiance 1.0 (one projector's white on a perfect reflector) fills 75% of the well
+  well_fill_at_white: 0.75 # radiance 1.0 (one projector's white on a perfect reflector) fills 75% of the well
   full_well_e: 20000
   read_noise_e: 3.0
   pedestal_dn: 256

@@ -16,7 +16,8 @@ from sim.planar import (
     raster_corners,
     rect_polygon,
 )
-from sim.projector import Projector, side_by_side
+from sim.arrangements import side_by_side
+from sim.projector import Projector
 from sim.render import QUALITY, Renderer
 from sim.screen import Screen, ScreenGrid
 
@@ -26,7 +27,7 @@ SCREEN_MM = (600.0, 260.0)
 CAMERA_RES = (480, 208)
 
 # The same installation as a scenario mapping, for tests that go through the YAML path.
-TINY_SCENARIO = {
+TINY_SCENARIO: dict = {
     "name": "tiny",
     "seed": 2,
     "quality": "fast",
@@ -38,6 +39,35 @@ TINY_SCENARIO = {
     "camera": {"preset": "whole_screen", "resolution": list(CAMERA_RES)},
 }
 
+# The tiny installation in a lit room with a bezel and 30 mm markers, and a camera framing wide
+# enough to see them (1.23 px/mm; each marker cell is 6 camera pixels).
+TINY_BEZEL: dict = {
+    **TINY_SCENARIO,
+    "name": "tiny_bezel",
+    "screen": {"size_mm": list(SCREEN_MM), "reflectance": 0.9, "ambient": 0.02,
+               "bezel": {"width_mm": 60, "markers": {"size_mm": 30}}},
+    "camera": {"preset": "whole_screen", "resolution": [960, 520], "margin": 0.15},
+}
+
+
+def tiny_shift_sweep(duration_s: float = 6.0, t0_s: float = 3.0) -> dict:
+    """The tiny bezel scene with B shifted at t0 by 0, 1 or 4 px across the overlap: three paired variants.
+
+    Frames are 0.5 s apart starting at 0.09 s, so frame 3's exposure (1.59-1.623 s) straddles the
+    slide change at 1.6 s.
+    """
+    return {
+        **TINY_BEZEL,
+        "name": "tiny_shift",
+        "camera": {**TINY_BEZEL["camera"], "phase_s": 0.09},
+        "duration_s": duration_s,
+        "trusted_window_s": t0_s,
+        "content": {"loop": True, "items": [{"type": "deck", "densities": ["low", "high"], "slides": 2, "hold_s": 1.6,
+                                             "border_frac": 0.1}, {"type": "black", "hold_s": 0.7}]},
+        "perturbation": {"b": {"kind": "shift", "magnitude_px": 1, "schedule": {"type": "step", "t0_s": t0_s}}},
+        "sweep": {"perturbation.b.magnitude_px": [0, 1, 4]},
+    }
+
 
 def make_setup(corners: dict[str, np.ndarray], content_rect, shape: str = "cosine", res=RES) -> CalibrationSetup:
     h = {n: homography_from_points(raster_corners(res), np.asarray(c, dtype=float)) for n, c in corners.items()}
@@ -45,8 +75,8 @@ def make_setup(corners: dict[str, np.ndarray], content_rect, shape: str = "cosin
 
 
 def side_by_side_setup(overlap_mm: float = 60.0, vertical_offset_mm: float = 0.0, shape: str = "cosine") -> CalibrationSetup:
-    a, b, rect = side_by_side(SCREEN_MM, RES, RES, WIDTH_MM, WIDTH_MM, overlap_mm, vertical_offset_mm)
-    return make_setup({"a": a, "b": b}, rect, shape)
+    arr = side_by_side(SCREEN_MM, {"a": RES, "b": RES}, WIDTH_MM, WIDTH_MM, overlap_mm, vertical_offset_mm)
+    return make_setup(arr.corners, arr.content_rect_mm, shape)
 
 
 def _box(x: float, y: float, w: float = WIDTH_MM, h: float = WIDTH_MM * RES[1] / RES[0]) -> np.ndarray:

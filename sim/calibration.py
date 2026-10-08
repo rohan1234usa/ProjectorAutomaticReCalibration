@@ -87,12 +87,17 @@ class CalibrationSetup:
         u, v = raster_corners(self.resolution[name]).T
         return float(np.sqrt(np.abs(jacobian_det(self.h_cal[name], u, v)).min()))
 
+    def overlap(self) -> np.ndarray:
+        """The calibrated overlap inside the content: box A ∩ box B ∩ content rect (convex polygon)."""
+        a, b = self.names
+        return clip_convex(clip_convex(self.box_mm(a), self.box_mm(b)), rect_polygon(*self.content_rect_mm))
+
     def inner_edges(self) -> dict[str, list[Segment]]:
         """For each projector, the overlap edges where it must fade to zero."""
         a, b = self.names
         boxes = {a: self.box_mm(a), b: self.box_mm(b)}
         content = rect_polygon(*self.content_rect_mm)
-        overlap = clip_convex(clip_convex(boxes[a], boxes[b]), content)
+        overlap = self.overlap()
         inner: dict[str, list[Segment]] = {a: [], b: []}
         for p, q in edges(overlap):
             mid = (p + q) / 2
@@ -144,6 +149,25 @@ class CalibrationSetup:
         x0, y0, x1, y1 = self.content_rect_mm
         px, py = (x1 - x0) / wc, (y1 - y0) / hc
         return np.array([[px, 0.0, x0 + 0.5 * px], [0.0, py, y0 + 0.5 * py], [0.0, 0.0, 1.0]])
+
+    def to_setup_dict(self, gamma_assumed: Mapping[str, float]) -> dict:
+        """What the calibration software can report: geometry, content rect and the blend rule.
+
+        The blend weights follow from these: the rule is "distance to each projector's inner
+        edges", shaped by the ramp and applied in linear light assuming the projector gamma.
+        """
+        return {
+            "projectors": {
+                n: {
+                    "resolution": [int(v) for v in self.resolution[n]],
+                    "h_cal_px_to_mm": np.asarray(self.h_cal[n], dtype=np.float64).tolist(),
+                    "gamma_assumed": float(gamma_assumed[n]),
+                }
+                for n in self.names
+            },
+            "content_rect_mm": [float(v) for v in self.content_rect_mm],
+            "blend": {"rule": "inner_edge_distance", "shape": self.blend_shape, "space": "linear", "black_uplift": False},
+        }
 
     def framebuffer(self, name: str, content: np.ndarray) -> np.ndarray:
         """Code values sent to projector `name`: content resampled where each pixel lands at H_cal.

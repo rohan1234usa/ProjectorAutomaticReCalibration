@@ -26,7 +26,8 @@ Read this whole file before writing code. If a simulation result contradicts a d
 choice below, do not silently redesign: write the finding with numbers to
 `docs/findings.md` and raise it.
 
-**Status:** Phase 1 (scaffold + simulator core) is done; Phase 2 is next (section 8).
+**Status:** Phases 1 and 2a (simulator datasets) are done; Phase 2b (the rest of the simulator's
+library) and Phase 3 (detector inputs and geometry) are next (section 8).
 
 ---
 
@@ -141,24 +142,28 @@ README.md               # short public overview and quick start                 
 pyproject.toml          # uv project, no package build: `uv sync`, `uv run pytest`   [done]
 detector.yaml           # section 10 defaults                                       [done]
 sim/                    # simulator: never imported by detector/; imports nothing from detector/
+  cfg.py                # strict YAML readers: unknown keys, numbers ("1e-3"), exact Fraction times [done]
   planar.py             # homographies, convex polygons, the one image warp (sim's own geometry)  [done]
-  screen.py             # screen size, reflectance, room light; bezel + reflectance map (Phase 2) [done]
-  fiducials.py          # ArUco marker layout and rendering on the bezel
-  projector.py          # resolution, homography px→mm, gamma, black level, colour balance, light [done]
-  calibration.py        # the blending setup: H_cal, content rect, blend maps, framebuffers      [done]
-  arrangements.py       # presets: side by side, stacked, rotated, corner, different sizes, large overlap
-  content.py            # still images: flat, black, text slides                                 [done]
-  textures.py           # photo-like textures, dark film, stripes, letterbox, blank-overlap content
-  video.py              # synthetic video: moving objects, pans, cuts
-  sequence.py           # content over time: decks, held slide, video, flat
-  camera.py             # homography mm→px, PSF, pixel integration, vignetting, noise, 16-bit     [done]
-  perturb.py            # misalignment injection on h_actual: shift, rotation, scale, keystone; schedules
-  nuisance.py           # camera bump, lamp dimming, room light, occluder, flicker, black-level uplift
-  truth.py              # per-frame ground truth: relative homography, offset_mm/px, tags
-  render.py             # the render chain: content → projector light → screen → camera          [done]
-  frames.py             # FrameSource: on-demand deterministic frames with render caches
-  scenario.py           # declarative scenario (YAML) → objects                                  [done: static subset]
-  dataset.py            # write/read datasets: metadata.jsonl, setup.json, optional 16-bit PNG frames
+  screen.py             # screen, bezel, wall, room light; the static reflectance map             [done]
+  fiducials.py          # ArUco marker layout and exact rendering on the bezel                    [done]
+  projector.py          # resolution, homography px→mm, gamma, black level, colour balance, mono  [done]
+  calibration.py        # the blending setup: H_cal, content rect, blend maps, framebuffers      [done; uplift: 2b]
+  arrangements.py       # presets: side by side, stacked, rotated, corner, different sizes, large overlap [done]
+  content.py            # still images: flat, black, text slides at three densities               [done]
+  textures.py           # photo-like textures, dark film, stripes, letterbox, blank-overlap content (2b)
+  video.py              # synthetic video: moving objects, pans, cuts                             (2b)
+  sequence.py           # content over time: decks, held slide, flat, black; exposure straddles  [done; video: 2b]
+  camera.py             # homography mm→px, PSF, pixel integration, vignetting, noise, 16-bit     [done; zoomed: 2b]
+  schedule.py           # how a change unfolds: step, staircase, drift, ramp, bump_then_hold, oscillate [done]
+  perturb.py            # misalignment injection on h_actual: shift, rotation, scale, keystone    [done]
+  nuisance.py           # camera bump, lamp dimming, room light, occluder, sharpening             (2b)
+  flicker.py            # per-projector flicker and rolling-shutter banding                      (2b)
+  truth.py              # per-frame ground truth: offset_mm/px (symmetric), relative homography  [done]
+  render.py             # the render chain as cached linear components: content → light → camera [done]
+  frames.py             # FrameSource: on-demand deterministic frames with render caches         [done]
+  sweep.py              # scenario files: extends (inheritance) and sweeps (variants)            [done]
+  scenario.py           # declarative scenario (YAML) → objects                                  [done]
+  dataset.py            # write/read datasets: metadata.jsonl, setup.json, optional 16-bit PNG frames [done]
 detector/               # the real algorithm: camera frames + blending setup (+ source frames) only
   inputs.py             # CameraFrame, BlendingSetup, SourceFrame: the detector's input contract
   config.py             # all tunables as a dataclass, loadable from YAML                         [done]
@@ -187,13 +192,14 @@ eval/
   metrics.py            # detection rate vs offset, FPR, latency, availability, per-type confusion
   sweep.py              # run the detector over datasets with threshold sweeps
   report.py             # CSV + PNG plots + per-scenario diagnostic images + report.md
-scenarios/              # YAML scenario files (one per test idea; adding a test = adding a file)
+scenarios/              # YAML scenario files (one per test idea; adding a test = adding a file); _lecture_hall.yaml is the shared base
 scripts/
-  make_dataset.py       # python -m scripts.make_dataset scenarios/xxx.yaml out/xxx [--frames all|sample|none]
+  make_dataset.py       # python -m scripts.make_dataset scenarios/xxx.yaml out/xxx [--frames all|sample|none]  [done]
+  check_dataset.py      # python -m scripts.check_dataset out/xxx: recorded truth vs injected offsets, paired variants [done]
   run_detector.py       # python -m scripts.run_detector out/xxx --config detector.yaml
   evaluate.py           # python -m scripts.evaluate out/xxx/results.jsonl
   visualize.py          # quick look at one frame, with the true geometry drawn on top            [done]
-tests/                  # pytest; unit + property + regression (fixed seeds)                     [done: Phase 1]
+tests/                  # pytest; unit + property + regression (fixed seeds); -m slow for demo scale [done: Phases 1, 2a]
 docs/
   findings.md           # dated findings with numbers
   research/pseudocode.md  # the original pseudocode this brief generalizes
@@ -213,8 +219,12 @@ Hard rules:
 ### 4.1 Rectification (`rectify.py`)
 - Detect the bezel markers (≥ 4 must be visible).
 - Solve the camera→screen homography from marker **centres**, onto a mm grid at
-  `CANVAS_PX_PER_MM`. Detected marker corners carry an inward bias of about 0.9 px at this
-  marker size; centres cancel it.
+  `CANVAS_PX_PER_MM`. Detected marker corners carry an inward bias (Phase 2: 0.65 px on
+  average and up to 1 px unrefined, 0.27 px with sub-pixel refinement); centres cancel it.
+  Phase 2 also found that ArUco's own sub-pixel corners give single-frame centres too noisy
+  for 0.2 px (p95 0.32 px), while straight-line fits to each marker's four outer edges give
+  p95 0.09 px. ArUco needs an 8-bit image scaled to the marker paper's level, not the frame's
+  maximum (`docs/findings.md`, 2026-10-07).
 - Frames are already linear (camera gamma 1). Subtract the pedestal and scale to relative
   radiance; pedestal and gain are known camera settings and part of the detector's inputs.
 - Track marker motion between frames. If the markers move more than `FIDUCIAL_MOVE_PX`:
@@ -471,18 +481,24 @@ keep a `fast` quality preset for tests. Items marked "Phase 2" are still to buil
 - **Frame delivery** (`frames.py`, `dataset.py`):
   - A `FrameSource` renders frame i on demand, seeded from the scenario seed
     (`SeedSequence(seed, spawn_key=(1, i))`), so any frame reproduces in any process.
-  - Caches skip work that did not change (projector light per content frame and geometry;
-    screen radiance; expected electrons), so a static frame costs about a tenth of a full
-    render.
+  - The optical chain is linear in light, so a frame is a weighted sum of cached camera
+    images, one per light source (room light, bezel lamp, each projector's light for the
+    pictures shown and its current geometry). Each is rendered once and reused while its
+    inputs stay the same, so an unchanged frame costs only its noise (about 50 ms at demo
+    scale, against about 0.4 s for a new slide).
   - `make_dataset` always writes `scenario.yaml`, `setup.json` (exactly what the detector
     may read) and `metadata.jsonl`. Frames are written as 16-bit PNG only on request
     (`--frames all|sample|none`; ≈ 8 MB per mono frame).
   - Reference mode: the source frames and the camera lag are part of the feed.
 
 Scenarios are YAML files in `scenarios/`. Adding a test idea must mean adding a YAML file,
-not code. Keys: `name`, `seed`, `quality`, `screen`, `arrangement`, `projectors`, `blend`,
-`content` (a sequence), `camera`, `perturbation`, `nuisances`, `reference`, `duration_s`,
-`sample_every_s`, `sweep` (one dataset variant per value).
+not code. Keys: `name`, `seed`, `quality`, `screen` (with `bezel` and its `markers`),
+`arrangement`, `projectors`, `blend`, `content` (a sequence), `camera` (with `color`,
+`exposure_s`, `phase_s`), `perturbation`, `nuisances`, `reference`, `duration_s`,
+`sample_every_s`, `trusted_window_s` (no perturbation may start before it), `extends` (deep-merge
+a base file such as `_lecture_hall.yaml`) and `sweep` (dotted keys to lists of values; one
+dataset variant per combination). Sweep variants share the seed, so they are paired: same
+content and noise, and bit-identical frames before a perturbation's onset.
 
 ---
 
@@ -544,9 +560,10 @@ phase before the done conditions of the phases it depends on hold.
 | Phase | Scope | Done condition | Depends on | Status |
 |---|---|---|---|---|
 | 1 Scaffold + simulator core | pyproject, packages, config dataclass; screen, projector, blending setup, content, camera, render chain; `scripts/visualize.py` | A human sees a seamless image with a faint black-level raster around it | — | **done 2026-10-06**: seam 3.2e-6, raster edge within 0.0001 mm, 0.43 s per frame, 68 tests |
-| 2 Simulator datasets | bezel + markers, mono camera, zoomed preset, arrangement presets, content library + sequences, perturbations, nuisances, truth, FrameSource + caches, `make_dataset` | `shift_sweep` and `aligned_slides` generate twice with identical metadata and frame hashes; every frame's `offset_mm` within 1e-6 mm of the injected value; markers found 8/8 at ambient 0.02 with centre error < 0.2 px | 1 | next |
-| 3 Detector inputs + geometry | `inputs.py`, `rectify.py`, `polygon.py`, `blending.py`, `geometry.py`, `classify.py`, `results.py` | 200 random convex quad pairs (rotated, corner, nested): overlap, core tiles, controls and pieces valid; blend weights equal the simulator's within 1e-6; rectification error ≤ 0.05 mm; camera bump re-solved within 0.1 mm | 1 | |
-| 4 Boundary (primary) | `edges.py`, `field.py`, `boundary.py`; minimal `eval/feed.py`, `eval/metrics.py`, `scripts/run_detector.py` | On `shift_sweep` and `rotation_sweep`: offset within 0.2 mm of truth whenever available (spec: 0.5 px); `None`, not a wrong number, when edges are hidden; availability ≥ 95% on `aligned_slides` and `aligned_video` | 2, 3 | |
+| 2a Simulator datasets | bezel + markers, mono camera, arrangement presets, slide decks and held/flat/black sequences, perturbations + schedules, truth, FrameSource + caches, `make_dataset`, `check_dataset` | `shift_sweep` and `aligned_slides` generate twice with identical metadata and frame hashes; every frame's `offset_mm` within 1e-6 mm of the injected value; markers found 8/8 at ambient 0.02 with centre error < 0.2 px | 1 | **done 2026-10-07**: `--jobs 1` and `--jobs 4` runs byte-identical (34,800 frames each); offset error ≤ 8e-14 mm; marker centres p95 0.092 px, max 0.125 px; 45 ms per unchanged frame; 203 tests (7 slow) |
+| 2b Simulator library | video, textures (photo, dark film, stripes, letterbox, blank overlap), nuisances + flicker, black-level uplift, zoomed camera preset, reference feed, the rest of the §7 catalogue | every §7 scenario loads and renders its event frames; `aligned_video`, `aligned_nuisances`, `camera_zoomed` and `boundary_hidden` generate twice identically; the zoomed camera finds the 4 overlap markers with centre error < 0.2 px; each nuisance has a physics test, with truth still aligned; a video straddle equals the linear-light mix; source timestamps lag the display by `lag_s` | 2a | next |
+| 3 Detector inputs + geometry | `inputs.py`, `rectify.py`, `polygon.py`, `blending.py`, `geometry.py`, `classify.py`, `results.py` | 200 random convex quad pairs (rotated, corner, nested): overlap, core tiles, controls and pieces valid; blend weights equal the simulator's within 1e-6; rectification error ≤ 0.05 mm; camera bump re-solved within 0.1 mm | 2a | |
+| 4 Boundary (primary) | `edges.py`, `field.py`, `boundary.py`; minimal `eval/feed.py`, `eval/metrics.py`, `scripts/run_detector.py` | On `shift_sweep` and `rotation_sweep`: offset within 0.2 mm of truth whenever available (spec: 0.5 px); `None`, not a wrong number, when edges are hidden; availability ≥ 95% on `aligned_slides` and `aligned_video` | 2a, 3 (`aligned_video`: 2b) | |
 | 5 Runner + decision | `baseline.py`, `pools.py`, `decision.py`, `runner.py`, JSONL output | `aligned_*` including nuisances: zero YES over ≥ 100 intervals; 4 px → YES within `YES_VOTES` intervals; 2 px → YES; 1 px → NO | 4 | |
 | 6a Echo | `echo.py`, developed on synthetic overlap data `O = a·S + b·warp(S)` | At 1.74 camera px/mm: 1.5–4 mm within 0.3 mm. At 0.87: ≥ 3 mm within 0.3 mm, and 1.5–2.5 mm flagged `unresolved`. Aligned twins: no detection over 50 seeds | 3 | |
 | 6b Hotspots + borders | `seam.py`, `borders.py`, synthetic first | Flat frames: 0.5 px across-shift within 0.2 px; along-shift → no offset; lamp −5% → warning with offset < 0.3 mm; aligned text crossing blocks → no offset | 3 | |
@@ -555,8 +572,8 @@ phase before the done conditions of the phases it depends on hold.
 | 8 Evaluation harness | `eval/sweep.py`, `eval/report.py`, `scripts/evaluate.py`, diagnostic images | One command evaluates every scenario and writes the detection curves, FPR, latency, availability, confusion, blind vs reference, and `report.md` | 6c | |
 | 9 Learning + stretch | threshold learning from simulated recalibrate presses (truth offsets above a hidden human threshold); grids of more than two projectors | Learned threshold within 10% of the hidden one (provisional) | 8 | |
 
-Phases 2 and 3 can run in parallel, and so can 6a/6b alongside 4/5 (they need only the
-geometry).
+Phase 3 needs only 2a, so 2b and 3 can run in parallel, and so can 6a/6b alongside 4/5
+(they need only the geometry).
 
 ---
 
@@ -591,8 +608,8 @@ geometry).
     matching aligned twin;
   - a measurement that cannot see must be tested to return `None`, not 0.
 - **Logging:** structured JSONL per interval. Never print tensors.
-- **Commits:** one per phase, with a message that states which "done" condition was met and
-  the numbers that show it.
+- **Commits:** one per phase (Phase 2: one per milestone, 2a and 2b), with a message that
+  states which "done" condition was met and the numbers that show it.
 
 ---
 

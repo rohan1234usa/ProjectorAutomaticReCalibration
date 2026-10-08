@@ -96,6 +96,16 @@ def signed_area(poly: np.ndarray) -> float:
     return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
 
 
+def centroid(poly: np.ndarray) -> np.ndarray:
+    """Area centroid (centre of mass) of a simple polygon."""
+    p = oriented(poly)
+    x, y = p[:, 0], p[:, 1]
+    xn, yn = np.roll(x, -1), np.roll(y, -1)
+    cross = x * yn - xn * y
+    six_area = 3.0 * float(np.sum(cross))
+    return np.array([float(np.sum((x + xn) * cross)) / six_area, float(np.sum((y + yn) * cross)) / six_area])
+
+
 def oriented(poly: np.ndarray) -> np.ndarray:
     """The polygon with positive signed area, so its interior lies on the left of every edge."""
     poly = np.asarray(poly, dtype=np.float64)

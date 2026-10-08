@@ -1,0 +1,17 @@
+# Question: are zoom and tilt perturbations detected, and does the boundary fit's escalation from
+# 6 to 8 parameters (affine to homography) catch the tilt? B zooms about its centre or tilts
+# (horizontal keystone about its centre), sized by the largest offset it causes in the overlap.
+extends: _lecture_hall.yaml
+name: scale_keystone
+seed: 41
+duration_s: 1200
+content:
+  loop: true
+  items:
+    - {type: deck, densities: [low, medium, high], slides: 5, hold_s: 37, border_frac: 0.05}
+    - {type: black, hold_s: 6}
+perturbation:
+  b: {kind: scale, magnitude_px: 1, pivot: centre, schedule: {type: step, t0_s: 615}}
+sweep:
+  perturbation.b.kind: [scale, keystone]
+  perturbation.b.magnitude_px: [0, 0.5, 1, 2, 4]

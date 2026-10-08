@@ -33,8 +33,8 @@ def test_whole_screen_framing():
 def test_flat_field_exposure_and_vignetting(supersample):
     cam = Camera.whole_screen(SCREEN, (641, 301), vignetting=0.15)  # odd size: a pixel sits at the exact centre
     grid, radiance = _flat_grid(0.4)
-    e = cam.expected_electrons(radiance, grid, supersample=supersample, surround=0.4)[..., 1]
-    assert e[150, 320] == pytest.approx(0.4 * cam.exposure * cam.full_well_e, rel=1e-4)
+    e = cam.expected_electrons(radiance, grid, supersample=supersample, border=0.4)[..., 1]
+    assert e[150, 320] == pytest.approx(0.4 * cam.well_fill_at_white * cam.full_well_e, rel=1e-4)
     corner = e[0, 0] / e[150, 320]
     assert 0.85 < corner < 0.86  # 15% vignetting at the very corner; pixel 0 sits half a pixel inside
 
@@ -77,7 +77,7 @@ def test_edges_land_where_they_should_at_every_supersampling(x_edge):
     row = 104
     true_u = apply_h(cam.h_mm_to_px, np.array([x_edge, 130.0]))[0]
     for k in (1, 2):
-        profile = cam.optical_image(rad, grid, supersample=k, surround=0.1)[row, :, 1].astype(np.float64)
+        profile = cam.optical_image(rad, grid, supersample=k, border=0.1)[row, :, 1].astype(np.float64)
         i0 = int(round(true_u))
         g = np.diff(profile[i0 - 8 : i0 + 9])
         centroid = i0 - 8 + 0.5 + np.sum(np.arange(g.size) * g) / g.sum()

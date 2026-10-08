@@ -203,3 +203,185 @@ on synthetic overlap data. They are not yet verified by tests:
   `HOLD_MAX_INTERVALS`, routing levels, evidence-quality gates, and the reference-mode
   parameters (CLAUDE.md §10).
 - `detector.yaml`, the dataclass and the tests are kept identical.
+
+## 2026-10-07 — Phase 2a: datasets with ground truth
+
+**Done condition met.** Commands:
+- `make_dataset scenarios/aligned_slides.yaml … --frames sample`, run twice;
+- `make_dataset scenarios/shift_sweep.yaml … --frames sample`, once with `--jobs 1` and once
+  with `--jobs 4`;
+- `check_dataset` on the first run.
+
+Results:
+- **Reproducible:** run 1 (`--jobs 1`) and run 2 (`--jobs 4`) are byte-identical in every file
+  except `timing.json` and `dataset.json`. That covers `metadata.jsonl`, `setup.json`,
+  `scenario.yaml`, the PNGs and `variants.json`, so all 34,800 frame hashes per run match
+  (3600 + 13 × 2400).
+  - Run 2 already used the code with the review fixes listed below.
+  - A third run with the committed code reproduces run 1 again (`aligned_slides`, and
+    `shift_sweep` 8 px across).
+- **Truth equals what was asked:** `check_dataset` recomputes the overlap, the pitch
+  (1.041667 mm) and each requested offset from `setup.json` and `scenario.yaml` with its own
+  geometry code. On every frame:
+  - `offset_mm` is within 8.0e-14 mm of the requested size × its schedule;
+  - `offset_px` agrees with it to the last bit;
+  - every shift points the requested way;
+  - the moved projector's `h_actual` is its shift of `h_cal`.
+- **Paired variants:** the 15,990 frames before the onset (1230 per variant) are bit-identical
+  across all 13 variants.
+- **Markers:** 8/8 found in every sampled noisy frame at ambient 0.02. Centre error is
+  p50 0.038, p95 0.092, max 0.125 camera px (40 marker sightings in 5 frames).
+
+Phase 2 is split into two milestones (decided before starting). 2a, this entry, meets the
+done condition. 2b adds video, textures, nuisances, the zoomed camera, the reference feed and
+the rest of the §7 catalogue.
+
+### What 2a built
+
+- **Installation:**
+  - a bezel (150 mm, reflectance 0.05) with 8 ArUco DICT_4X4_50 markers (80 mm plus a
+    one-cell quiet zone): 4 in the corners, 2 above the overlap, 2 below;
+  - a static reflectance map painted by exact area coverage, per material;
+  - the wall, lit by the room light;
+  - default ambient 0.02.
+- **Mono:** Rec. 709 luminance taken right after the projector's gamma; RGB stays an option.
+- **Six arrangement presets** (side by side, stacked, rotated, corner, different sizes, large
+  overlap), each defaulted for the demo screen and centred on it.
+- **Time:**
+  - exact `Fraction` times and a camera phase;
+  - slide decks at three text densities, a held slide, flat, black;
+  - an exposure that straddles a picture change mixes both pictures in linear light.
+- **Perturbations:** shift, rotation, scale and keystone on A, B or both. They are sized by
+  the offset they cause and run on seven schedules; continuous schedules are quantized to
+  0.02 px.
+- **Truth per frame:**
+  - symmetric `offset_mm` and `offset_px`;
+  - `h_rel` and `h_actual`;
+  - the actual boxes, the camera homography, the visible markers, and the content segments.
+- **Frames and datasets:**
+  - `FrameSource` renders any frame on demand from cached linear components;
+  - datasets hold `scenario.yaml`, `setup.json`, `metadata.jsonl`, optional 16-bit PNGs,
+    `dataset.json` and `timing.json`;
+  - `make_dataset` and `check_dataset`;
+  - scenario files support `extends`, and `sweep` over dotted keys with paired seeds.
+- **Scenarios:** `_lecture_hall.yaml` (the base), `aligned_slides`, `shift_sweep` (13
+  variants), `rotation_sweep` (9), `scale_keystone` (9). The Phase 1 file still works.
+
+### Numbers
+
+**Markers** (whole-screen camera, 0.868 px/mm, cell 11.6 px, ambient 0.02; paper gives about
+240 e⁻ against 15.5 e⁻ of noise):
+
+| Centre estimator | p50 (px) | p95 (px) | max (px) |
+|---|---|---|---|
+| ArUco SUBPIX corners, diagonal intersection, single noisy frame | 0.156 | 0.315 | 0.431 |
+| Line fits to the square's 4 outer edges (`tests/markers.py`), single noisy frame | 0.038 | 0.092 | 0.125 |
+| Same, noiseless | — | — | 0.041 |
+
+- Corner bias on a noiseless frame:
+  - ArUco corners sit 0.65 px inward on average, up to 0.98 px, without refinement;
+  - with SUBPIX refinement, 0.27 px (0.25–0.32).
+- The 0.9 px in CLAUDE.md §4.1 matches the unrefined case. Centres cancel the bias either
+  way.
+- ArUco needs an 8-bit image scaled to the paper's level (paper → 200). With a bright slide
+  up, `dn >> 8` or a min-max stretch finds no markers at all (planning review).
+- Dark room (ambient 0.0003): 0/8 found in single frames, as planned.
+- Tiny test scene (1.23 px/mm, 6 px cells): 8/8, centre error < 0.3 px.
+
+**Rendering** (mono, demo scale, standard quality, this Mac):
+- Each new light source (a new slide or a new geometry) costs one camera pass of about 20 ms.
+- The first frame takes 0.8 s, which includes the room component and both projectors.
+- A new slide takes about 0.4 s: generating the content, two projector components, then
+  noise.
+- A geometry change takes about 0.17 s.
+- An unchanged frame takes 45–51 ms. That is mostly noise (23 ms), summing the components
+  (3.5 ms after skipping ×1 multiplies) and encoding.
+- Truth costs 0.07 ms per frame.
+- Linear superposition differs from a single pass by ≤ 3.6e-7 relative, and OpenCV's results
+  do not depend on its thread count (1, 2, 4 or 10 threads; planning review).
+- The screen grid with the bezel is 3456 × 8256 at standard quality.
+- Phase 1's scene measures as before: unlit 3.6 e⁻, one black 12.0 e⁻, overlap 22.0 e⁻.
+
+**Datasets:**
+- `aligned_slides`: 3600 frames in 137–162 s (33–39 ms of rendering per frame), 56 MB, of
+  which 6 PNGs.
+- `shift_sweep`: 13 × 2400 frames, 76–91 s per variant. It takes 1064 s serially and 492 s
+  with `--jobs 4` on 10 cores, and fills 602 MB with 65 PNGs.
+- `metadata.jsonl` holds about 1.3 KB per frame.
+
+**Offset definition.** The ground truth is the largest separation of A's and B's copies of the
+same content over the calibrated overlap: max over x∈P of |D_B(x) − D_A(x)|, with
+D_p = H_act,p·H_cal,p⁻¹.
+- The brief's wording, read as max |h_rel(y) − y| over y∈P, samples a slightly different
+  region. It is then not symmetric: a 0.1% zoom of A about the screen centre gives
+  0.59795 mm, and the same zoom of B gives 0.59855 mm. The symmetric form gives 0.59855 mm
+  for both.
+- `h_rel` is still recorded.
+- The detector's own `offset_mm` (§4.2) should use the symmetric form, so that truth and
+  estimate mean the same thing.
+
+### Departures and choices (raised, not silently changed)
+
+1. **Marker centres.** Single-frame ArUco centres miss 0.2 px; edge-line fits meet it.
+   - The done condition is checked with the edge-line estimator. It lives in `tests/` as a
+     measuring instrument, not detector code.
+   - For Phase 3, `rectify.py` should use edge-line fits, or a median over frames, and scale
+     to the paper level. CLAUDE.md §4.1 now says so.
+2. **Offset definition:** the symmetric form above.
+3. **`aligned_slides`** reads "20 min" as 20 minutes *checked*: 600 s of trusted window plus
+   1200 s, so 1800 s in all.
+   - Densities cycle slide by slide within one dataset. Per-density numbers come from the
+     content tags.
+   - Slides hold 37 s, so changes wander through the 30 s check intervals.
+4. **Shift direction.** `across` is the length-weighted normal of the moving projector's
+   inner edges, positive *away* from its partner: the overlap narrows and darkens. `along` is
+   that normal turned +90°.
+5. **Sizes.** Every perturbation can be sized by the offset it causes (`magnitude_px`), so
+   sweeps line up on one axis. Rotation and scale also take `deg` and `factor`.
+6. **Renames:**
+   - `Camera.exposure` → `well_fill_at_white`, because `exposure_s` is now the time window;
+   - `Screen.surround` (a fixed radiance) → `wall_reflectance`, lit by the room light. The
+     Phase 1 scenario uses 0.33, which reproduces its old 0.0001.
+7. **Frames on disk:**
+   - `--frames none` writes truth only and renders nothing;
+   - `sample` renders and hashes every frame, but stores a PNG only every 600 frames and at
+     each geometry change. Every 60 frames would have filled about 4.5 GB per `shift_sweep`
+     run.
+8. **Corner preset:** the content rect is the union's bounding box. No rectangle inside the
+   L-shaped union crosses the overlap usefully.
+9. **Rotated preset:** the pair is re-centred after B turns.
+10. **Sweeps:** variants equal in effect (any zero-size perturbation) are kept once, so
+    `shift_sweep` has 13 variants, not 14. Names carry the swept values, e.g.
+    `magnitude_px=2__direction=across`.
+11. **Modules not in §3:**
+    - `sim/cfg.py`: YAML reads `1e-3` as a string, so every number goes through one reader;
+    - `sim/schedule.py`: schedules shared with the 2b nuisances;
+    - `sim/sweep.py`;
+    - `scripts/check_dataset.py`;
+    - `tests/markers.py`.
+12. **Deferred:**
+    - to 2b: video, textures, nuisances and flicker, black-level uplift, screen gain, the
+      zoomed camera, the reference feed;
+    - to Phase 5 or 9: recalibration events (an H_cal change mid-run).
+
+### Code review before committing
+
+A review of the change found nine problems. All are fixed, each with a test.
+
+1. **`check_dataset` checked the simulator against itself.** Its "injected" offset was rebuilt
+   from the simulator's own tags, so a wrong size passed. A keystone asked for −4 px came out
+   at 3.78 px and still passed. It now reads what was asked for from `scenario.yaml` and
+   recomputes geometry and pitch itself.
+2. **Negative keystone sizes were solved as positive.** A keystone is not symmetric in k:
+   −4 px came out at 3.97 px. The solver now searches on the requested side.
+3. **`reference.lag_s` was parsed but ignored.** The projectors now show content(t − lag).
+4. **Screen and wall in one grid pixel.** Where a pixel held both (only without a bezel), the
+   reflectance was 0.30 instead of 0.48. The fix is bit-identical for the demo's bezel grids.
+5. **`across` for a nested projector** was NaN; it is now a clear error ("give a vector").
+6. **Content length.** Content had to last until `duration_s` + exposure instead of the end of
+   the last exposure, which refused a 6 s held slide for a 6 s run.
+7. **A perturbation without a `schedule` was silently never applied.** A schedule is now
+   required; `{type: none}` switches a perturbation off.
+8. **The pairing check** now compares only variants that differ in nothing but their
+   perturbation, so sweeps over the scene (ambient, arrangement, camera) are not paired.
+9. **Seeds** are read as exact integers (2⁵³ + 1 stays itself).
