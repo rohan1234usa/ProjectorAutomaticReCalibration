@@ -1,0 +1,17 @@
+# Question: are small rotations of B detected, about its centre and about its far corner?
+# Each rotation is sized by the largest offset it causes in the overlap, in projector pixels; the
+# angle follows (about the centre, 1 px is 0.052 degrees; about the far corner, 0.026 degrees).
+extends: _lecture_hall.yaml
+name: rotation_sweep
+seed: 31
+duration_s: 1200
+content:
+  loop: true
+  items:
+    - {type: deck, densities: [low, medium, high], slides: 5, hold_s: 37, border_frac: 0.05}
+    - {type: black, hold_s: 6}
+perturbation:
+  b: {kind: rotation, magnitude_px: 1, pivot: centre, schedule: {type: step, t0_s: 615}}
+sweep:
+  perturbation.b.magnitude_px: [0, 0.5, 1, 2, 4]
+  perturbation.b.pivot: [centre, far_corner]

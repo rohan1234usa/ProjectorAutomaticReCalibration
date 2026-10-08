@@ -1,7 +1,8 @@
 """Quick-look image of one simulated camera frame, for humans.
 
-Renders frame 0 of a scenario and writes ``view.png``: the camera frame shown with a
-logarithmic display curve,
+Renders one frame of a scenario (frame 0 unless ``--frame``) and writes a PNG named after the
+variant and frame (``view.png`` for frame 0 of a scenario without a sweep): the camera frame
+shown with a logarithmic display curve,
 
     y = ln(1 + x/b) / ln(1 + 1/b),
 
@@ -11,17 +12,21 @@ is invisible. The log curve is roughly how a dark-adapted eye responds, and show
 content and the faint black-level raster at the same time.
 
 Below it, a second panel shows the same frame dimmed, with the scenario's true geometry drawn
-on top: each projector's box (its lit raster), the overlap polygon where both shine, and the
-content rect. When aligned, the blend makes the overlap invisible in bright content, so without
-this panel it is easy to mistake a content feature for a projector boundary.
+on top: each projector's box where it really lands in this frame (its lit raster), the overlap
+polygon where both shine, the content rect and the bezel markers. When aligned, the blend makes
+the overlap invisible in bright content, so without this panel it is easy to mistake a content
+feature for a projector boundary.
 
 It also prints one JSON line: render time, and the levels measured in small patches of the
 frame -- the unlit screen, each projector's black, and the overlap's doubled black (the black
 patches need content with a black border). Each patch sits at the point deepest inside its
-true region, so it works for any arrangement; a region that does not exist gives ``null``.
-Using the true geometry is fine here: this is harness code, not the detector.
+true region in this frame, so it works for any arrangement and any perturbation; a region
+that does not exist gives ``null``. Using the true geometry is fine here: this is harness code,
+not the detector.
 
-Usage: python -m scripts.visualize scenarios/aligned_side_by_side.yaml --out out/phase1
+Usage:
+    python -m scripts.visualize scenarios/aligned_side_by_side.yaml --out out/phase1
+    python -m scripts.visualize scenarios/shift_sweep.yaml --variant 'magnitude_px=8__direction=across' --frame 1300
 """
 
 from __future__ import annotations
@@ -35,10 +40,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from sim.camera import Camera
 from sim.content import border_px
-from sim.planar import apply_h, clip_convex, points_in_convex, rect_polygon
+from sim.frames import FrameSource
+from sim.planar import apply_h, box_mm, clip_convex, points_in_convex, rect_polygon
 from sim.render import QUALITY
-from sim.scenario import Scene, load_scene
+from sim.scenario import Scenario, Scene, load_scenario
 
 Regions = tuple[np.ndarray, dict[str, np.ndarray]]  # sample points (rows, cols, 2) and region masks
 
@@ -47,6 +54,7 @@ _COLOR_A = (255, 150, 30)
 _COLOR_B = (60, 170, 255)
 _COLOR_OVERLAP = (60, 220, 90)
 _COLOR_CONTENT = (235, 235, 235)
+_COLOR_MARKER = (230, 80, 220)
 _REGION_STEP_MM = 2.0  # sampling step of the region masks used to place labels and patches
 
 
@@ -59,20 +67,23 @@ def log_display(x: np.ndarray, black: float) -> np.ndarray:
 def white_electrons(scene: Scene) -> float:
     """Electrons recorded (image centre) for one projector's full white on the screen."""
     brightness = scene.projectors[scene.setup.names[0]].brightness
-    return scene.screen.reflectance * brightness * scene.camera.exposure * scene.camera.full_well_e
+    return scene.screen.reflectance * brightness * scene.camera.electrons_per_unit_radiance
 
 
-def border_mm(scene: Scene) -> float:
-    """Width of the content's black border on the screen (0 when the content has none)."""
-    _, y0, _, y1 = scene.setup.content_rect_mm
-    size = scene.setup.content_size()
-    return border_px(scene.content, size) * (y1 - y0) / size[1]
+def border_mm(scenario: Scenario, i: int = 0) -> float:
+    """Width on the screen of the black border of the picture shown in frame i (0 if none)."""
+    seq = scenario.sequence
+    key = seq.segments(scenario.timing.time(i), scenario.timing.exposure)[0][0]
+    _, y0, _, y1 = scenario.scene.setup.content_rect_mm
+    size = scenario.scene.setup.content_size()
+    return border_px(seq.items[key[0]].border_frac, size) * (y1 - y0) / size[1]
 
 
-def region_masks(scene: Scene) -> Regions:
+def region_masks(scene: Scene, border: float = 0.0, boxes: dict[str, np.ndarray] | None = None) -> Regions:
     """Screen sample points (rows, cols, 2) and boolean masks of the regions that matter.
 
-    only_a / only_b / overlap: lit by one or both projectors. unlit: on the screen, outside both
+    only_a / only_b / overlap: lit by one or both projectors, whose boxes are `boxes` (where they
+    land in the frame shown) or else the calibrated ones. unlit: on the screen, outside both
     rasters. black_*: inside the content rect but in its black border, split by who lights it.
     """
     w, h = scene.screen.size_mm
@@ -80,10 +91,11 @@ def region_masks(scene: Scene) -> Regions:
     ys = np.arange(_REGION_STEP_MM / 2, h, _REGION_STEP_MM)
     pts = np.stack(np.meshgrid(xs, ys), axis=-1)
     a, b = scene.setup.names
-    in_a = points_in_convex(scene.setup.box_mm(a), pts)
-    in_b = points_in_convex(scene.setup.box_mm(b), pts)
+    boxes = boxes or {n: scene.setup.box_mm(n) for n in (a, b)}
+    in_a = points_in_convex(boxes[a], pts)
+    in_b = points_in_convex(boxes[b], pts)
     x0, y0, x1, y1 = scene.setup.content_rect_mm
-    m = border_mm(scene)
+    m = border
     x, y = pts[..., 0], pts[..., 1]
     in_content = (x >= x0) & (x <= x1) & (y >= y0) & (y <= y1)
     in_picture = (x >= x0 + m) & (x <= x1 - m) & (y >= y0 + m) & (y <= y1 - m)
@@ -113,13 +125,13 @@ def deepest_point(pts: np.ndarray, mask: np.ndarray, toward: tuple[float, float]
     return pts[r, c], float(depth[r, c])
 
 
-def measure_levels(
-    scene: Scene, electrons: np.ndarray, regions: Regions | None = None
-) -> dict[str, dict[str, float] | None]:
+def measure_levels(scene: Scene, electrons: np.ndarray, regions: Regions,
+                   camera: Camera | None = None) -> dict[str, dict[str, float] | None]:
     """Mean and per-pixel spread (electrons, all channels) in a small square at each patch."""
-    pts, masks = regions or region_masks(scene)
+    pts, masks = regions
+    camera = camera or scene.camera  # a knocked camera sees each patch elsewhere
     centre = (scene.screen.size_mm[0] / 2, scene.screen.size_mm[1] / 2)
-    px_per_mm = scene.camera.px_per_mm_at_centre()
+    px_per_mm = camera.px_per_mm_at_centre()
     frame_h, frame_w = electrons.shape[:2]
     out: dict[str, dict[str, float] | None] = {}
     for name in ("unlit", "black_a", "black_b", "black_overlap"):
@@ -129,7 +141,7 @@ def measure_levels(
             continue
         point, depth_mm = found
         half = max(1, int(0.5 * depth_mm * px_per_mm))  # the square stays inside the inscribed circle
-        u, v = np.rint(apply_h(scene.camera.h_mm_to_px, point)).astype(int)
+        u, v = np.rint(apply_h(camera.h_mm_to_px, point)).astype(int)
         if not (half <= u < frame_w - half and half <= v < frame_h - half):
             out[name] = None  # the camera does not see this patch whole
             continue
@@ -146,7 +158,7 @@ def _fixed_point(poly_px: np.ndarray) -> np.ndarray:
 
 def _dashed(img: np.ndarray, poly_px: np.ndarray, color: tuple[int, int, int], thickness: int, dash: float) -> None:
     """Closed dashed outline, so a second outline lying on top of another stays distinguishable."""
-    for p, q in zip(poly_px, np.roll(poly_px, -1, axis=0)):
+    for p, q in zip(poly_px, np.roll(poly_px, -1, axis=0), strict=True):
         length = float(np.hypot(*(q - p)))
         for s in np.arange(0.0, length, 2 * dash):
             a = p + (q - p) * (s / length)
@@ -154,12 +166,13 @@ def _dashed(img: np.ndarray, poly_px: np.ndarray, color: tuple[int, int, int], t
             cv2.line(img, tuple(_fixed_point(a)), tuple(_fixed_point(b)), color, thickness, cv2.LINE_AA, shift=4)
 
 
-def overlay_panel(scene: Scene, view: np.ndarray, regions: Regions | None = None) -> np.ndarray:
-    """The frame dimmed to gray, with box A, box B, their overlap and the content rect drawn on it."""
+def overlay_panel(scene: Scene, view: np.ndarray, regions: Regions, boxes: dict[str, np.ndarray],
+                  camera: Camera | None = None) -> np.ndarray:
+    """The frame dimmed to gray, with box A, box B (where they land now), their overlap, the content rect and the markers."""
     img = np.repeat((view.mean(axis=2, keepdims=True) * 0.55).astype(np.uint8), 3, axis=2)
-    h_cam = scene.camera.h_mm_to_px
+    h_cam = (camera or scene.camera).h_mm_to_px
     a, b = scene.setup.names
-    box_a, box_b = scene.setup.box_mm(a), scene.setup.box_mm(b)
+    box_a, box_b = boxes[a], boxes[b]
     overlap_px = apply_h(h_cam, clip_convex(box_a, box_b))
     t = max(2, img.shape[1] // 900)
 
@@ -172,9 +185,16 @@ def overlay_panel(scene: Scene, view: np.ndarray, regions: Regions | None = None
     _dashed(img, apply_h(h_cam, box_b), _COLOR_B, t, dash=12.0 * t)
     _dashed(img, apply_h(h_cam, rect_polygon(*scene.setup.content_rect_mm)), _COLOR_CONTENT, max(1, t // 2),
             dash=6.0 * t)
+    markers = scene.markers
+    for i in range(0 if markers is None else len(markers.centres_mm)):
+        square = apply_h(h_cam, markers.square(i))
+        cv2.polylines(img, [_fixed_point(square)], True, _COLOR_MARKER, max(1, t // 2), cv2.LINE_AA, shift=4)
+        u, v = square.mean(axis=0)
+        cv2.putText(img, str(i), (int(u) - 6 * t, int(v) + 5 * t), cv2.FONT_HERSHEY_SIMPLEX, 0.5 * t, _COLOR_MARKER, t,
+                    cv2.LINE_AA)
 
     scale = img.shape[0] * 0.035 / cv2.getTextSize("H", cv2.FONT_HERSHEY_SIMPLEX, 1.0, 1)[0][1]
-    pts, masks = regions or region_masks(scene)
+    pts, masks = regions
     centre = tuple(np.vstack([box_a, box_b]).mean(axis=0))
     for text, region, color in (("A only", "only_a", _COLOR_A), ("B only", "only_b", _COLOR_B),
                                 ("overlap", "overlap", _COLOR_OVERLAP)):
@@ -198,45 +218,57 @@ def caption(width: int, text: str) -> np.ndarray:
 
 
 def main(argv: list[str] | None = None) -> dict:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("scenario", type=Path)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("scenario", type=Path, help="scenario YAML file")
     parser.add_argument("--out", type=Path, default=None, help="output directory (default out/<scenario>)")
-    parser.add_argument("--quality", choices=sorted(QUALITY), default=None)
+    parser.add_argument("--quality", choices=sorted(QUALITY), default=None,
+                        help="override the scenario's render quality preset")
+    parser.add_argument("--variant", default=None, help="sweep variant to show")
+    parser.add_argument("--frame", type=int, default=0, help="frame index (default 0)")
     args = parser.parse_args(argv)
 
-    scene = load_scene(args.scenario, quality=args.quality)
+    scenario = load_scenario(args.scenario, quality=args.quality, variant=args.variant)
+    scene = scenario.scene
     out_dir = args.out or Path("out") / scene.name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     t0 = time.perf_counter()
-    renderer = scene.renderer()
-    content = scene.content_image()
+    source = FrameSource(scenario)
+    state = source.state(args.frame)
     t1 = time.perf_counter()
-    result = renderer.render(content, scene.frame_rng(0))
+    frame = source.frame(args.frame, state)
     t2 = time.perf_counter()
 
-    electrons = scene.camera.decode(result.frame)
+    electrons = scene.camera.decode(frame)
     black = scene.projectors[scene.setup.names[0]].black_level
     view = log_display(electrons / np.float32(white_electrons(scene)), black)
-    text = (f"{scene.name}  |  frame 0  |  log display y = ln(1+x/b)/ln(1+1/b), x = radiance / one projector's white,"
-            f" b = black level = 1/{1 / black:.0f}")
+    if view.ndim == 2:
+        view = np.repeat(view[..., None], 3, axis=2)
+    truth = source.truth(args.frame, state)
+    text = (f"{scenario.variant}  |  frame {args.frame} (t = {float(state.t):.2f} s, offset {truth['truth']['offset_mm']:.3f} mm)"
+            f"  |  log display y = ln(1+x/b)/ln(1+1/b), x = radiance / one projector's white, b = black level = 1/{1 / black:.0f}")
     legend = ("true geometry: orange = projector A's box (lit raster)  |  blue dashed = projector B's box  |"
-              "  green = overlap (A and B both shine; blended)  |  white dashed = content rect")
-    regions = region_masks(scene)
-    view = np.vstack([view, caption(view.shape[1], text), overlay_panel(scene, view, regions),
+              "  green = overlap (A and B both shine; blended)  |  white dashed = content rect  |  magenta = markers")
+    boxes = {n: box_mm(state.h_actual[n], scene.setup.resolution[n]) for n in scene.setup.names}
+    regions = region_masks(scene, border_mm(scenario, args.frame), boxes)
+    view = np.vstack([view, caption(view.shape[1], text), overlay_panel(scene, view, regions, boxes, source.camera_for(state)),
                       caption(view.shape[1], legend)])
-    path = out_dir / "view.png"
+    plain = scenario.variant == scene.name and args.frame == 0
+    path = out_dir / ("view.png" if plain else f"view_{scenario.variant}_frame{args.frame}.png")
     cv2.imwrite(str(path), cv2.cvtColor(view, cv2.COLOR_RGB2BGR))
 
     summary: dict = {
         "scenario": scene.name,
+        "variant": scenario.variant,
+        "frame_index": args.frame,
         "view": str(path),
         "frame": list(scene.camera.resolution),
-        "screen_grid": list(result.grid.shape),
+        "screen_grid": list(source.renderer.grid.shape),
         "setup_s": round(t1 - t0, 3),
         "render_s": round(t2 - t1, 3),
+        "offset_mm": truth["truth"]["offset_mm"],
     }
-    levels = measure_levels(scene, electrons, regions)
+    levels = measure_levels(scene, electrons, regions, source.camera_for(state))
     white = white_electrons(scene)
     summary["levels"] = levels
     summary["levels_display_255"] = {

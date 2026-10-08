@@ -17,10 +17,18 @@ misalignments.
 
 ## Status
 
-Phase 1, the simulator core, is done. It renders two aligned projectors through a simulated
-camera: a seamless combined image, with each projector's faint black-level raster around it.
-Phase 2, scenario datasets with ground truth, is next. The detector itself starts in Phase 3
-(CLAUDE.md §8).
+Phases 1 and 2, the simulator, are done. It renders two edge-blended projectors in any of six
+arrangements, on a screen framed by a bezel with printed fiducial markers, through a locked
+16-bit mono camera that sees the whole screen or zooms on the overlap. Over time it:
+- plays slides, photos, stripes and synthetic video;
+- moves the projectors by known amounts (shift, rotation, scale, keystone, on any schedule);
+- adds nuisances that must never cause a YES (camera knocks, lamp dimming, room light, people
+  walking past, flicker, sharpening, black-level compensation);
+- records ground truth for every frame.
+
+`make_dataset` turns any of the 16 scenario files into a reproducible dataset.
+
+Next is Phase 3, where the detector itself starts: its inputs and geometry (CLAUDE.md §8).
 
 ## Quick start
 
@@ -40,18 +48,34 @@ uv run python -m scripts.visualize scenarios/aligned_side_by_side.yaml --out out
 
 The last command writes `out/phase1/view.png` with two panels:
 - the simulated camera frame, shown with a log display so the 1/1500 black level is visible;
-- the same frame with each projector's footprint and their overlap drawn on it.
+- the same frame with each projector's footprint, their overlap and, with a bezel, the markers
+  drawn on it.
 
-It also prints the render time and the light levels it measured.
+It also prints the render time and the light levels it measured. `--variant` and `--frame`
+pick any frame of any scenario, written as `view_<variant>_frame<i>.png`.
+
+Generate a dataset, then check its ground truth against what was injected:
+
+```bash
+uv run python -m scripts.make_dataset scenarios/shift_sweep.yaml out/shift_sweep --frames sample --jobs 4
+```
+
+```bash
+uv run python -m scripts.check_dataset out/shift_sweep
+```
+
+`--frames none` writes the ground truth alone in seconds. Any frame can be re-rendered from a
+dataset's `scenario.yaml`; with `--frames sample` or `all`, its stored hash proves it is the
+same frame. The slow, demo-scale tests run with `uv run pytest -m slow`.
 
 ## Layout
 
 | Path | What it holds |
 |---|---|
-| `sim/` | The simulator: screen, projectors, the calibration software's blending setup, content, camera and render chain. |
+| `sim/` | The simulator: screen, bezel and markers, projectors and their arrangements, the calibration software's blending setup, content over time, perturbations, camera, render chain, ground truth and datasets. |
 | `detector/` | The detector, which only sees camera frames and the blending setup. So far it holds its configuration. |
 | `scripts/` | Command-line tools. |
-| `scenarios/` | One YAML file per test idea. |
+| `scenarios/` | One YAML file per test idea; `_lecture_hall.yaml` is the installation they share. |
 | `tests/` | The test suite. |
 
 `detector/` and `sim/` never import each other.

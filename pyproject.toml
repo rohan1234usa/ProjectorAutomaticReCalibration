@@ -21,4 +21,5 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-q"
+addopts = "-q -m 'not slow'"
+markers = ["slow: demo-scale checks that take minutes; run them with -m slow"]

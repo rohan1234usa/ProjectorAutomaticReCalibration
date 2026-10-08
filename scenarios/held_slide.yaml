@@ -1,0 +1,14 @@
+# Question: one slide held for 20 minutes -- does the detector cope with zero content variety?
+# The echo pools starve (nothing new to pool), so the boundary and the hotspot fit must carry the
+# check. An aligned twin, and B shifted 2 px across the overlap at 1215 s (mid-interval).
+extends: _lecture_hall.yaml
+name: held_slide
+seed: 51
+duration_s: 1800
+content:
+  items:
+    - {type: held, density: medium, hold_s: 1800, border_frac: 0.05}
+perturbation:
+  b: {kind: shift, magnitude_px: 2, direction: across, schedule: {type: step, t0_s: 1215}}
+sweep:
+  perturbation.b.magnitude_px: [0, 2]

@@ -10,8 +10,9 @@ content at the screen point where that pixel lands (geometric correction), then 
 that pixel's blend weight (photometric blending). Nothing changes until the next calibration.
 So when a projector physically drifts, its framebuffer is still made for the old geometry and
 the picture lands in the wrong place. That mismatch is exactly what the detector looks for.
-Besides camera frames, this information is the one thing the detector may read. The harness
-hands it over as plain data, since the detector never imports the simulator.
+Besides camera frames, this information is what the detector may read, together with the marker
+layout and the locked camera settings (and, in reference mode, the source frames). The harness
+hands it over as plain data (``setup.json``), since the detector never imports the simulator.
 
 Blend rule. Where both projectors cover a point, their weights must add up to 1 in linear
 light, so the sum is seamless. Each projector must also fade to exactly 0 at each of its edges
@@ -44,7 +45,7 @@ from sim.planar import (
     clip_convex,
     distance_to_segments,
     edges,
-    jacobian_det,
+    local_scale,
     points_in_convex,
     raster_corners,
     rect_polygon,
@@ -64,10 +65,11 @@ class CalibrationSetup:
     resolution: Mapping[str, tuple[int, int]]  # (width, height) per projector
     content_rect_mm: tuple[float, float, float, float]  # (x0, y0, x1, y1)
     blend_shape: str = "cosine"
+    black_uplift: bool = False  # lift each projector's single-coverage black to the overlap's double black
 
     def __post_init__(self) -> None:
-        if len(self.h_cal) != 2 or set(self.h_cal) != set(self.resolution):
-            raise ValueError("a calibration setup needs exactly two projectors with resolutions")
+        if set(self.h_cal) != {"a", "b"} or set(self.resolution) != {"a", "b"}:
+            raise ValueError("a calibration setup needs exactly two projectors, a and b, with resolutions")
         if self.blend_shape not in RAMPS:
             raise ValueError(f"blend_shape must be one of {sorted(RAMPS)}, got {self.blend_shape!r}")
         x0, y0, x1, y1 = self.content_rect_mm
@@ -76,23 +78,30 @@ class CalibrationSetup:
 
     @property
     def names(self) -> tuple[str, str]:
-        a, b = self.h_cal
-        return a, b
+        """Always ("a", "b"): offsets and h_rel are B relative to A, whatever order the maps came in."""
+        return "a", "b"
 
     def box_mm(self, name: str) -> np.ndarray:
         return box_mm(self.h_cal[name], self.resolution[name])
 
-    def pixel_pitch_mm(self, name: str) -> float:
-        """Side of the projector's smallest pixel footprint on the screen."""
+    def finest_pitch_mm(self, name: str | None = None) -> float:
+        """Side of the smallest pixel footprint on the screen: of projector `name`, or of both."""
+        if name is None:
+            return min(self.finest_pitch_mm(n) for n in self.names)
         u, v = raster_corners(self.resolution[name]).T
-        return float(np.sqrt(np.abs(jacobian_det(self.h_cal[name], u, v)).min()))
+        return float(local_scale(self.h_cal[name], u, v).min())
+
+    def overlap(self) -> np.ndarray:
+        """The calibrated overlap inside the content: box A ∩ box B ∩ content rect (convex polygon)."""
+        a, b = self.names
+        return clip_convex(clip_convex(self.box_mm(a), self.box_mm(b)), rect_polygon(*self.content_rect_mm))
 
     def inner_edges(self) -> dict[str, list[Segment]]:
         """For each projector, the overlap edges where it must fade to zero."""
         a, b = self.names
         boxes = {a: self.box_mm(a), b: self.box_mm(b)}
         content = rect_polygon(*self.content_rect_mm)
-        overlap = clip_convex(clip_convex(boxes[a], boxes[b]), content)
+        overlap = self.overlap()
         inner: dict[str, list[Segment]] = {a: [], b: []}
         for p, q in edges(overlap):
             mid = (p + q) / 2
@@ -125,6 +134,21 @@ class CalibrationSetup:
             b: np.where(both, 1.0 - ramp, inside[b].astype(np.float64)),
         }
 
+    def uplift_mask(self, name: str) -> np.ndarray:
+        """1 on projector `name`'s pixels that land outside its partner's box, else 0: (h, w) float32.
+
+        Black-level compensation. Two blacks add up in the overlap, so on dark content the overlap
+        is a brighter patch. Blending software can hide it by lifting each projector's own black
+        wherever its partner does not reach, by the partner's black level: then black is equally
+        dark everywhere. The lift is built at calibrated geometry like the blend, so after a drift
+        its edge no longer meets the partner's raster edge -- a new step the detector may see.
+        """
+        partner = self.names[1] if name == self.names[0] else self.names[0]
+        w, h = self.resolution[name]
+        u, v = np.meshgrid(np.arange(w, dtype=np.float64), np.arange(h, dtype=np.float64))
+        landing = apply_h(self.h_cal[name], np.stack([u, v], axis=-1))
+        return (~points_in_convex(self.box_mm(partner), landing)).astype(np.float32)
+
     def blend_weights(self, name: str) -> np.ndarray:
         """Blend weight of every pixel of projector `name`, (h, w) float32 (the blend map)."""
         w, h = self.resolution[name]
@@ -134,7 +158,7 @@ class CalibrationSetup:
 
     def content_size(self) -> tuple[int, int]:
         """Native content resolution: the content rect sampled at the finest projector pitch."""
-        pitch = min(self.pixel_pitch_mm(n) for n in self.names)
+        pitch = self.finest_pitch_mm()
         x0, y0, x1, y1 = self.content_rect_mm
         return max(1, round((x1 - x0) / pitch)), max(1, round((y1 - y0) / pitch))
 
@@ -144,6 +168,26 @@ class CalibrationSetup:
         x0, y0, x1, y1 = self.content_rect_mm
         px, py = (x1 - x0) / wc, (y1 - y0) / hc
         return np.array([[px, 0.0, x0 + 0.5 * px], [0.0, py, y0 + 0.5 * py], [0.0, 0.0, 1.0]])
+
+    def to_setup_dict(self, gamma_assumed: Mapping[str, float]) -> dict:
+        """What the calibration software can report: geometry, content rect and the blend rule.
+
+        The blend weights follow from these: the rule is "distance to each projector's inner
+        edges", shaped by the ramp and applied in linear light assuming the projector gamma.
+        """
+        return {
+            "projectors": {
+                n: {
+                    "resolution": [int(v) for v in self.resolution[n]],
+                    "h_cal_px_to_mm": np.asarray(self.h_cal[n], dtype=np.float64).tolist(),
+                    "gamma_assumed": float(gamma_assumed[n]),
+                }
+                for n in self.names
+            },
+            "content_rect_mm": [float(v) for v in self.content_rect_mm],
+            "blend": {"rule": "inner_edge_distance", "shape": self.blend_shape, "space": "linear",
+                      "black_uplift": bool(self.black_uplift)},
+        }
 
     def framebuffer(self, name: str, content: np.ndarray) -> np.ndarray:
         """Code values sent to projector `name`: content resampled where each pixel lands at H_cal.

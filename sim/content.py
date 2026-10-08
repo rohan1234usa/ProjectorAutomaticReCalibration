@@ -1,19 +1,22 @@
-"""Content: the pictures the calibration software is asked to show.
+"""Content: the still pictures the calibration software is asked to show.
 
 Content is authored like any video signal. It is an RGB image of gamma-encoded code values in
-[0, 1] that fills the content rect; the projector's gamma later turns codes into light. So far
-it provides:
-  * flat fields, to test that the blend is seamless;
+[0, 1] that fills the content rect; the projector's gamma later turns codes into light. This
+module provides:
+  * flat fields (gray or colour), to test that the blend is seamless;
   * black, to see the black level;
-  * a procedural text slide.
+  * procedural text slides at three text densities (low, medium, high), with graphics.
 
-The slide's text, line chart and flat gray band run across the whole width. Seams and ghosts
-only show where content crosses the overlap, so the test content must cross it. Every feature
-is drawn as obvious slide content (text, a framed chart, bars): a bare diagonal line across the
-slide was once mistaken for a projector boundary.
+Seams and ghosts only show where content crosses the overlap, so test content must cross it.
+A slide's text lines and its flat gray band span the whole width, so they cross an overlap of
+any shape. The charts are laid out for the side-by-side demo: a bar chart near each side edge
+and a line chart in the middle third, where that overlap is. Every feature is drawn as obvious
+slide content (text, a framed chart, bars): a bare diagonal line across a slide was once
+mistaken for a projector boundary. Density changes how much text there is and how small it is:
+dense text is repetitive, fine detail, the hardest case for the echo test.
 
-An optional black border (``border_frac``) keeps the picture away from the raster edges, so
-each projector's faint black-level raster shows around it.
+An optional black border (:func:`framed`, ``border_frac``) keeps the picture away from the
+raster edges, so each projector's faint black-level raster shows around it.
 
 All drawing happens on 8-bit canvases, because OpenCV only antialiases text and lines there.
 The result is then scaled to [0, 1].
@@ -21,8 +24,7 @@ The result is then scaled to [0, 1].
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Callable
 
 import cv2
 import numpy as np
@@ -35,6 +37,13 @@ _WORDS = (
     "playback signal cable frame rate refresh scaler edge corner tile grid content slide video "
     "sharp soft bright dim uniform color white point shift rotation scale tilt check report"
 ).split()
+# Body text per density: number of lines, capital height and first baseline / line pitch (in % of
+# the slide height). All densities leave the gray band (55-62%) and the charts (66-94%) in place.
+DENSITIES = {
+    "low": (4, 4.2, 24.0, 8.5),
+    "medium": (6, 2.8, 21.0, 6.0),
+    "high": (12, 1.9, 17.0, 3.2),
+}
 
 
 def flat(size: tuple[int, int], value: float | tuple[float, float, float] = 0.5) -> np.ndarray:
@@ -71,8 +80,11 @@ def _line_of_words(rng: np.random.Generator, width_px: float, height: float) -> 
         words = candidate.split(" ")
 
 
-def slide(size: tuple[int, int], rng: np.random.Generator) -> np.ndarray:
-    """A text-heavy presentation slide whose features cross the whole width."""
+def slide(size: tuple[int, int], rng: np.random.Generator, density: str = "medium") -> np.ndarray:
+    """A presentation slide at text density low/medium/high; its text and gray band span the width."""
+    if density not in DENSITIES:
+        raise ValueError(f"slide density must be one of {sorted(DENSITIES)}, got {density!r}")
+    lines, text_h, first, pitch = DENSITIES[density]
     w, h = size
     u = h / 100.0  # layout unit: 1% of the slide height
     img = np.empty((h, w, 3), dtype=np.uint8)
@@ -82,11 +94,11 @@ def slide(size: tuple[int, int], rng: np.random.Generator) -> np.ndarray:
     scale = _text_scale(5.0 * u)
     tw = cv2.getTextSize(title, _FONT, scale, max(1, round(scale * 1.4)))[0][0]
     _put(img, title, ((w - tw) / 2, 8.5 * u), 5.0 * u, (250, 250, 250))
-    for i in range(6):  # body text lines spanning the full width
-        line = _line_of_words(rng, 0.9 * w, 2.8 * u)
-        _put(img, "- " + line, (0.04 * w, 21 * u + i * 6 * u), 2.8 * u, (30, 30, 34))
+    for i in range(lines):  # body text lines spanning the full width
+        line = _line_of_words(rng, 0.9 * w, text_h * u)
+        _put(img, "- " + line, (0.04 * w, first * u + i * pitch * u), text_h * u, (30, 30, 34))
     img[round(55 * u) : round(62 * u)] = (128, 128, 128)  # flat mid-gray band
-    for k, x0 in enumerate((0.05, 0.75)):  # two small bar charts, one in each projector's half
+    for k, x0 in enumerate((0.05, 0.75)):  # two small bar charts, near the left and right edges
         for j in range(5):
             bh = rng.uniform(8, 24) * u
             x = round((x0 + j * 0.04) * w)
@@ -99,7 +111,7 @@ def slide(size: tuple[int, int], rng: np.random.Generator) -> np.ndarray:
 def _line_chart(img: np.ndarray, rng: np.random.Generator, x0: int, x1: int, y0: int, y1: int, u: float) -> None:
     """A framed line chart: a zig-zag series with circle markers, axes and ticks, in the slide's centre.
 
-    Its sloped segments and closed markers cross the overlap, which is where ghosting shows best.
+    Side by side, its sloped segments and closed markers cross the overlap, where ghosting shows best.
     """
     thin = max(1, round(0.25 * u))
     cv2.rectangle(img, (x0, y0), (x1, y1), (255, 255, 255), -1)
@@ -118,39 +130,26 @@ def _line_chart(img: np.ndarray, rng: np.random.Generator, x0: int, x1: int, y0:
         cv2.line(img, (round(x), y1), (round(x), y1 - round(1.5 * u)), (90, 90, 96), thin)
 
 
-_KINDS = {"flat", "black", "slide"}
-_KEYS = {"type", "value", "border_frac"}
-
-
-def border_px(cfg: Mapping[str, Any], size: tuple[int, int]) -> int:
-    """Width in content pixels of the black border on every side (``border_frac`` x height)."""
-    frac = float(cfg.get("border_frac", 0.0))
+def border_px(frac: float, size: tuple[int, int]) -> int:
+    """Width in content pixels of the black border on every side: `frac` x the height."""
     if not 0.0 <= frac < 0.5:
         raise ValueError(f"content: border_frac must be in [0, 0.5), got {frac}")
     return round(frac * size[1])
 
 
-def make_content(cfg: Mapping[str, Any], size: tuple[int, int], rng: np.random.Generator) -> np.ndarray:
-    """Build content of `size` (width, height) from a scenario's ``content`` mapping.
-
-    Keys: ``type`` (flat | black | slide), ``value`` (flat only: gray level or RGB triple),
-    ``border_frac`` (black border on all sides, as a fraction of the height).
-    """
-    unknown = set(cfg) - _KEYS
-    if unknown or cfg.get("type") not in _KINDS:
-        raise ValueError(f"content: need type in {sorted(_KINDS)}; unknown keys {sorted(unknown)}")
+def inner_size(size: tuple[int, int], frac: float) -> tuple[int, int]:
+    """(width, height) of the picture inside a black border of `frac` x the height."""
     w, h = size
-    border = border_px(cfg, size)
-    inner = (w - 2 * border, h - 2 * border)
-    if min(inner) < 1:
-        raise ValueError(f"content: border_frac leaves no picture inside {size}")
-    kind = cfg["type"]
-    if kind == "flat":
-        picture = flat(inner, cfg.get("value", 0.5))
-    elif kind == "black":
-        picture = black(inner)
-    else:
-        picture = slide(inner, rng)
+    b = border_px(frac, size)
+    if min(w - 2 * b, h - 2 * b) < 1:
+        raise ValueError(f"content: border_frac {frac} leaves no picture inside {size}")
+    return w - 2 * b, h - 2 * b
+
+
+def framed(size: tuple[int, int], frac: float, draw: Callable[[tuple[int, int]], np.ndarray]) -> np.ndarray:
+    """A content picture of `size` (width, height): `draw(inner size)` inside a black border."""
+    w, h = size
+    b = border_px(frac, size)
     img = np.zeros((h, w, 3), dtype=np.float32)
-    img[border : h - border, border : w - border] = picture
+    img[b : h - b, b : w - b] = draw(inner_size(size, frac))
     return img

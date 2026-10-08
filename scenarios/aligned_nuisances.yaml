@@ -1,0 +1,30 @@
+# Question: can anything that is not a misalignment make the detector answer YES?
+# Aligned slides throughout; each variant adds one nuisance: the camera knocked (by (3, -2) px
+# and 0.05 deg), B's lamp dimming 15% (black level included), the room lights going up, two
+# people walking past (they may hide markers) -- all after the trusted window -- or, present from
+# calibration on as properties of the installation, flicker beating with the exposure (moving
+# rolling-shutter bands) and in-camera sharpening left on. The last variant has them all at once.
+extends: _lecture_hall.yaml
+name: aligned_nuisances
+seed: 71
+duration_s: 1800
+content:
+  loop: true
+  items:
+    - {type: deck, densities: [low, medium, high], slides: 50, hold_s: 37, border_frac: 0.05}
+perturbation: none
+nuisances: []
+sweep:
+  nuisances:
+    - [{type: camera_bump, shift_px: [3, -2], rotation_deg: 0.05, schedule: {type: step, t0_s: 915}}]
+    - [{type: lamp, projector: b, gain: 0.85, schedule: {type: ramp, t0_s: 915, duration_s: 120}}]
+    - [{type: room_light, ambient: 0.05, schedule: {type: step, t0_s: 1015}}]
+    - [{type: occluder, t0_s: 915, duration_s: 6, direction: right}, {type: occluder, t0_s: 1315, duration_s: 9, direction: left}]
+    - [{type: flicker, projector: a, amplitude: 0.1, frequency_hz: 100, line_time_s: 1.0e-5}]
+    - [{type: sharpening, amount: 0.8, sigma_px: 1.0}]
+    - [{type: camera_bump, shift_px: [3, -2], rotation_deg: 0.05, schedule: {type: step, t0_s: 915}},
+       {type: lamp, projector: b, gain: 0.85, schedule: {type: ramp, t0_s: 915, duration_s: 120}},
+       {type: room_light, ambient: 0.05, schedule: {type: step, t0_s: 1015}},
+       {type: occluder, t0_s: 1315, duration_s: 9, direction: left},
+       {type: flicker, projector: a, amplitude: 0.1, frequency_hz: 100, line_time_s: 1.0e-5},
+       {type: sharpening, amount: 0.8, sigma_px: 1.0}]

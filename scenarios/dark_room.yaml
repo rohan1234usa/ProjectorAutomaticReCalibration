@@ -1,0 +1,14 @@
+# Question: in a dark room (ambient 0.0003), can the markers be found, with or without a little
+# light of the bezel's own, and what does averaging frames buy? Aligned slides for five minutes.
+extends: _lecture_hall.yaml
+name: dark_room
+seed: 151
+duration_s: 300
+screen: {ambient: 0.0003}
+content:
+  loop: true
+  items:
+    - {type: deck, densities: [medium], slides: 9, hold_s: 37, border_frac: 0.05}
+perturbation: none
+sweep:
+  screen.bezel.light: [0.0, 0.02]

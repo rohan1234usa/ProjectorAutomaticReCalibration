@@ -1,0 +1,14 @@
+# Question: how long does a slow drift take to be noticed, and does the timed safety check help?
+# B creeps across the overlap at 1 px per hour from the end of the trusted window: 2 px after
+# two hours (quantized to 0.02 px steps). Slides and photos alternate.
+extends: _lecture_hall.yaml
+name: slow_drift
+seed: 81
+duration_s: 7800
+content:
+  loop: true
+  items:
+    - {type: deck, densities: [low, medium, high], slides: 9, hold_s: 37, border_frac: 0.05}
+    - {type: photo, pictures: 4, hold_s: 41}
+perturbation:
+  b: {kind: shift, magnitude_px: 1, direction: across, schedule: {type: drift, t0_s: 600, rate_per_h: 1.0}}

@@ -1,0 +1,18 @@
+# Question: where does repetitive content fool the echo test? Vertical stripes of period P = 8 mm
+# (sinusoidal in light), a new random phase every 30 s so the echo pools see varied pictures; B
+# shifts across by amounts near P/2 and P at 615 s. A shift of exactly P puts B's stripes back on
+# A's: for periodic content the echo and the reference kernel are both blind to it, and only the
+# boundary can tell. The source feed is available (lag 0.1 s) for the blind-vs-reference comparison.
+extends: _lecture_hall.yaml
+name: repetition_limit
+seed: 131
+duration_s: 1200
+content:
+  loop: true
+  items:
+    - {type: stripes, period_mm: 8.0, angle_deg: 0, pictures: 40, hold_s: 30}
+reference: {available: true, lag_s: 0.1}
+perturbation:
+  b: {kind: shift, magnitude_mm: 4.0, direction: across, schedule: {type: step, t0_s: 615}}
+sweep:
+  perturbation.b.magnitude_mm: [0, 2.0, 3.5, 4.0, 4.5, 7.5, 8.0, 8.5]

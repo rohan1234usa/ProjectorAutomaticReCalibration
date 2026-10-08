@@ -8,7 +8,7 @@ import yaml
 
 from scripts import visualize
 from sim.planar import points_in_convex
-from sim.scenario import scene_from_dict
+from sim.scenario import scenario_from_dict
 from tests.scenes import TINY_SCENARIO
 
 
@@ -41,10 +41,11 @@ def test_visualize_writes_view_and_levels(tmp_path):
 
 
 def test_patches_sit_inside_their_true_regions_for_a_rotated_overlap():
-    scene = scene_from_dict(_rotated_tiny())
+    scenario = scenario_from_dict(_rotated_tiny())
+    scene = scenario.scene
     a, b = scene.setup.names
     box_a, box_b = scene.setup.box_mm(a), scene.setup.box_mm(b)
-    pts, masks = visualize.region_masks(scene)
+    pts, masks = visualize.region_masks(scene, visualize.border_mm(scenario))
     centre = (300.0, 130.0)
     expected = {"black_a": (True, False), "black_b": (False, True), "black_overlap": (True, True),
                 "unlit": (False, False), "overlap": (True, True), "only_a": (True, False)}
@@ -56,7 +57,7 @@ def test_patches_sit_inside_their_true_regions_for_a_rotated_overlap():
 
 def test_missing_regions_report_null(tmp_path):
     cfg = copy.deepcopy(TINY_SCENARIO)
-    cfg["content"] = {"type": "slide"}  # no black border: no black patches to measure
+    cfg["content"] = {"type": "held"}  # no black border: no black patches to measure
     summary = _run(tmp_path, cfg)
     assert summary["levels"]["unlit"] is not None
     assert summary["levels"]["black_a"] is None and summary["levels_display_255"]["black_overlap"] is None

@@ -1,0 +1,48 @@
+# Shared base: the demo lecture hall. Scenarios start from it (extends: _lecture_hall.yaml) and
+# change only what their question needs. Files whose name starts with "_" are bases, not scenarios.
+seed: 1
+quality: standard
+sample_every_s: 0.5            # the detector looks at a frame this often (SAMPLE_EVERY_S)
+trusted_window_s: 600          # the detector refines its baseline this long after calibration (TRUSTED_WINDOW_S)
+
+screen:
+  size_mm: [4000, 1500]
+  reflectance: 0.9
+  ambient: 0.02                # dim lecture hall: room light is 1/50 of one projector's white
+  wall_reflectance: 0.3
+  bezel:
+    width_mm: 150              # black velvet frame around the screen, carrying the markers
+    reflectance: 0.05
+    light: 0.0                 # no lamp of its own: the markers rely on the room light
+    markers: {layout: auto, size_mm: 80, quiet_zone_cells: 1, paper: 0.8, ink: 0.04}
+
+arrangement:
+  preset: side_by_side
+  width_mm: 2000               # each image 2000 mm wide -> 1.04 mm per projector pixel
+  overlap_mm: 410              # 393.6 projector pixels: the grids are deliberately not pixel-aligned
+  vertical_offset_mm: 0.3      # B sits 0.3 mm lower than A, as in any real installation
+
+projectors:
+  a: {resolution: [1920, 1080], gamma: 2.2, brightness: 1.0, black_level: 0.0006667}
+  b: {resolution: [1920, 1080], gamma: 2.2, brightness: 1.0, black_level: 0.0006667}
+
+blend:
+  shape: cosine
+
+camera:
+  preset: whole_screen
+  resolution: [3840, 1600]
+  margin: 0.05
+  keystone: 0.02
+  color: mono                  # 16-bit linear luminance
+  exposure_s: 1/30             # two refresh periods at 60 Hz: no flicker banding
+  phase_s: 0.0123              # the camera's clock is not locked to the video's
+  psf_sigma_px: 0.8
+  well_fill_at_white: 0.75     # one projector's white on a perfect reflector fills 75% of the well
+  full_well_e: 20000
+  read_noise_e: 3.0
+  pedestal_dn: 256
+  vignetting: 0.15
+  gamma: 1.0
+
+reference: {available: false}
