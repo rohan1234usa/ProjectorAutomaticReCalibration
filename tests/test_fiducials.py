@@ -14,7 +14,7 @@ import pytest
 from sim.fiducials import CELLS, MarkerSet, auto_layout, cell_matrix, check_on_bezel, paint, visible
 from sim.frames import FrameSource
 from sim.planar import apply_h, rect_polygon
-from sim.scenario import load_scenario, scenario_from_dict
+from sim.scenario import load_scenario, load_scenarios, scenario_from_dict
 from sim.screen import Bezel, Screen, ScreenGrid
 from tests.markers import centre_of, detect, edge_lines, to_8bit
 from tests.scenes import TINY_BEZEL
@@ -107,3 +107,12 @@ def test_markers_are_not_found_in_a_dark_room():
     paper_e = dark.scene.markers.paper * 0.0003 * camera.electrons_per_unit_radiance
     found = detect(to_8bit(camera.decode(FrameSource(dark).frame(0)), paper_e))
     assert found == {}
+
+
+@pytest.mark.slow
+def test_markers_found_by_the_zoomed_camera():
+    """Phase 2b: at 1.74 px/mm the camera sees the four markers at the overlap's ends, precisely."""
+    scenario = load_scenarios(REPO / "scenarios" / "camera_zoomed.yaml")[0]
+    ids, errors = _measure(scenario, [0, 801, 2399])
+    assert ids == [[4, 5, 6, 7]] * 3
+    assert errors.max() < 0.2, f"centre errors: max {errors.max():.3f} px"

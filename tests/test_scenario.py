@@ -97,13 +97,17 @@ def test_extends_and_sweep_expand_into_paired_variants(tmp_path):
         (lambda c: c["projectors"].update(c=c["projectors"].pop("b")), "named a and b"),
         (lambda c: c["screen"].update(ambient=True), "expected a number"),
         (lambda c: c.update(duration_s=10, content={"items": [{"type": "black", "hold_s": 2}]}), "set loop: true"),
-        (lambda c: c.update(nuisances=[{"type": "camera_bump"}]), "Phase 2b"),
+        (lambda c: c.update(nuisances=[{"type": "earthquake"}]), "must be one of"),
+        (lambda c: c.update(nuisances=[{"type": "lamp", "projector": "a", "schedule": {"type": "step", "t0_s": 5}}]),
+         "trusted window"),
         (lambda c: c.update(perturbation={"b": {"kind": "shift", "magnitude_px": 1, "schedule": {"type": "step", "t0_s": 5}}}),
          "trusted window"),
         (lambda c: c.update(perturbation={"b": {"kind": "shift", "magnitude_px": 1, "deg": 1}}), "exactly one size"),
         (lambda c: c.update(perturbation={"c": {"kind": "shift", "magnitude_px": 1}}), "unknown keys"),
         (lambda c: c.update(trusted_window_s=0, perturbation={"b": {"kind": "shift", "magnitude_px": 1}}), "schedule is required"),
         (lambda c: c.update(reference={"available": True, "lag_s": -0.1}), "cannot show content before"),
+        (lambda c: c["camera"].update(px_per_mm=2.0), "belongs to the zoomed preset"),
+        (lambda c: c.update(blend={"shape": "cosine", "black_uplift": "yes"}), "true or false"),
     ],
 )
 def test_mistakes_fail_with_a_clear_message(mutate, message):
@@ -137,3 +141,10 @@ def test_seeds_are_read_exactly():
     big = 2**53 + 1
     assert scenario_from_dict({**copy.deepcopy(TINY_SCENARIO), "seed": big}).scene.seed == big
     assert scenario_from_dict({**copy.deepcopy(TINY_SCENARIO), "seed": "1e3"}).scene.seed == 1000
+
+
+def test_a_zoom_too_tight_for_the_overlap_is_refused():
+    cfg = copy.deepcopy(TINY_SCENARIO)
+    cfg["camera"] = {"preset": "zoomed", "resolution": [480, 208], "px_per_mm": 4.0}
+    with pytest.raises(ValueError, match="does not hold the whole overlap"):
+        scenario_from_dict(cfg)

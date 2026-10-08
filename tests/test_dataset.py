@@ -104,3 +104,14 @@ def test_checker_passes_a_good_sweep_and_catches_a_wrong_offset(sweep_file, tmp_
     spec = out / "magnitude_px=4" / "scenario.yaml"
     spec.write_text(spec.read_text().replace("magnitude_px: 4", "magnitude_px: 4.01"))
     assert not check_dataset.main([str(out)])
+
+
+def test_one_variant_split_across_workers_gives_the_same_files(sweep_file, tmp_path):
+    scenario = load_scenarios(sweep_file)[2]
+    write_dataset(scenario, tmp_path / "serial", frames="sample", every=5)
+    write_dataset(scenario, tmp_path / "split", frames="sample", every=5, jobs=3)
+    files = sorted(p.relative_to(tmp_path / "serial") for p in (tmp_path / "serial").rglob("*") if p.is_file())
+    assert not list((tmp_path / "split").glob("metadata.part*"))
+    for f in files:
+        if f.name not in ("timing.json", "dataset.json"):
+            assert (tmp_path / "serial" / f).read_bytes() == (tmp_path / "split" / f).read_bytes(), str(f)

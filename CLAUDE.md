@@ -26,8 +26,8 @@ Read this whole file before writing code. If a simulation result contradicts a d
 choice below, do not silently redesign: write the finding with numbers to
 `docs/findings.md` and raise it.
 
-**Status:** Phases 1 and 2a (simulator datasets) are done; Phase 2b (the rest of the simulator's
-library) and Phase 3 (detector inputs and geometry) are next (section 8).
+**Status:** Phases 1 and 2 (the simulator) are done; Phase 3 (detector inputs and geometry) is
+next (section 8).
 
 ---
 
@@ -147,17 +147,19 @@ sim/                    # simulator: never imported by detector/; imports nothin
   screen.py             # screen, bezel, wall, room light; the static reflectance map             [done]
   fiducials.py          # ArUco marker layout and exact rendering on the bezel                    [done]
   projector.py          # resolution, homography px→mm, gamma, black level, colour balance, mono  [done]
-  calibration.py        # the blending setup: H_cal, content rect, blend maps, framebuffers      [done; uplift: 2b]
+  calibration.py        # the blending setup: H_cal, content rect, blend maps, black uplift, framebuffers [done]
   arrangements.py       # presets: side by side, stacked, rotated, corner, different sizes, large overlap [done]
   content.py            # still images: flat, black, text slides at three densities               [done]
-  textures.py           # photo-like textures, dark film, stripes, letterbox, blank-overlap content (2b)
-  video.py              # synthetic video: moving objects, pans, cuts                             (2b)
-  sequence.py           # content over time: decks, held slide, flat, black; exposure straddles  [done; video: 2b]
-  camera.py             # homography mm→px, PSF, pixel integration, vignetting, noise, 16-bit     [done; zoomed: 2b]
+  textures.py           # photo-like textures, dark film, stripes, letterbox, blank-overlap content [done]
+  video.py              # synthetic video: moving objects, pans, cuts, fades                      [done]
+  pictures.py           # content item kinds (deck, held, flat, black, photo, dark, stripes, video) [done]
+  sequence.py           # content over time; exposure straddles; what was sent when (reference)  [done]
+  camera.py             # homography mm→px, PSF, pixel integration, vignetting, noise, 16-bit; whole/zoomed [done]
   schedule.py           # how a change unfolds: step, staircase, drift, ramp, bump_then_hold, oscillate [done]
   perturb.py            # misalignment injection on h_actual: shift, rotation, scale, keystone    [done]
-  nuisance.py           # camera bump, lamp dimming, room light, occluder, sharpening             (2b)
-  flicker.py            # per-projector flicker and rolling-shutter banding                      (2b)
+  nuisance.py           # camera bump, lamp dimming, room light, occluder, sharpening             [done]
+  flicker.py            # per-projector flicker and rolling-shutter banding                      [done]
+  state.py              # FrameState: everything that decides one exposure (no rendering)       [done]
   truth.py              # per-frame ground truth: offset_mm/px (symmetric), relative homography  [done]
   render.py             # the render chain as cached linear components: content → light → camera [done]
   frames.py             # FrameSource: on-demand deterministic frames with render caches         [done]
@@ -415,8 +417,8 @@ keep a `fast` quality preset for tests. Items marked "Phase 2" are still to buil
   - **Default ambient: 0.02** of projector white, a dim lecture hall. Planning estimates:
     passive markers are undetectable in single frames at the dark-room 0.0003, and give
     ≈ 0.12 mm homography error at 0.02. The `dark_room` scenario covers the dark case.
-  - Optional screen gain and vignetting (Phase 2): a high-gain screen is brighter near its
-    hotspot.
+  - Optional screen gain and vignetting: a high-gain screen is brighter near its hotspot (not
+    built yet: it needs a gain map per projector; `docs/findings.md`, 2026-10-07).
 - **Projector** (×2):
   - resolution, homography px→mm (from an arrangement preset or explicit corners), gamma,
     brightness, black level (non-zero!), colour balance;
@@ -561,7 +563,7 @@ phase before the done conditions of the phases it depends on hold.
 |---|---|---|---|---|
 | 1 Scaffold + simulator core | pyproject, packages, config dataclass; screen, projector, blending setup, content, camera, render chain; `scripts/visualize.py` | A human sees a seamless image with a faint black-level raster around it | — | **done 2026-10-06**: seam 3.2e-6, raster edge within 0.0001 mm, 0.43 s per frame, 68 tests |
 | 2a Simulator datasets | bezel + markers, mono camera, arrangement presets, slide decks and held/flat/black sequences, perturbations + schedules, truth, FrameSource + caches, `make_dataset`, `check_dataset` | `shift_sweep` and `aligned_slides` generate twice with identical metadata and frame hashes; every frame's `offset_mm` within 1e-6 mm of the injected value; markers found 8/8 at ambient 0.02 with centre error < 0.2 px | 1 | **done 2026-10-07**: `--jobs 1` and `--jobs 4` runs byte-identical (34,800 frames each); offset error ≤ 8e-14 mm; marker centres p95 0.092 px, max 0.125 px; 45 ms per unchanged frame; 203 tests (7 slow) |
-| 2b Simulator library | video, textures (photo, dark film, stripes, letterbox, blank overlap), nuisances + flicker, black-level uplift, zoomed camera preset, reference feed, the rest of the §7 catalogue | every §7 scenario loads and renders its event frames; `aligned_video`, `aligned_nuisances`, `camera_zoomed` and `boundary_hidden` generate twice identically; the zoomed camera finds the 4 overlap markers with centre error < 0.2 px; each nuisance has a physics test, with truth still aligned; a video straddle equals the linear-light mix; source timestamps lag the display by `lag_s` | 2a | next |
+| 2b Simulator library | video, textures (photo, dark film, stripes, letterbox, blank overlap), nuisances + flicker, black-level uplift, zoomed camera preset, reference feed, the rest of the §7 catalogue | every §7 scenario loads and renders its event frames; `aligned_video`, `aligned_nuisances`, `camera_zoomed` and `boundary_hidden` generate twice identically; the zoomed camera finds the 4 overlap markers with centre error < 0.2 px; each nuisance has a physics test, with truth still aligned; a video straddle equals the linear-light mix; source timestamps lag the display by `lag_s` | 2a | **done 2026-10-07**: `--jobs 4` and `--jobs 5` runs byte-identical (48,000 frames each); zoomed marker centres max 0.073 px; lamp, room light and bump exact; flicker moves frame to frame; 264 tests (19 slow) |
 | 3 Detector inputs + geometry | `inputs.py`, `rectify.py`, `polygon.py`, `blending.py`, `geometry.py`, `classify.py`, `results.py` | 200 random convex quad pairs (rotated, corner, nested): overlap, core tiles, controls and pieces valid; blend weights equal the simulator's within 1e-6; rectification error ≤ 0.05 mm; camera bump re-solved within 0.1 mm | 2a | |
 | 4 Boundary (primary) | `edges.py`, `field.py`, `boundary.py`; minimal `eval/feed.py`, `eval/metrics.py`, `scripts/run_detector.py` | On `shift_sweep` and `rotation_sweep`: offset within 0.2 mm of truth whenever available (spec: 0.5 px); `None`, not a wrong number, when edges are hidden; availability ≥ 95% on `aligned_slides` and `aligned_video` | 2a, 3 (`aligned_video`: 2b) | |
 | 5 Runner + decision | `baseline.py`, `pools.py`, `decision.py`, `runner.py`, JSONL output | `aligned_*` including nuisances: zero YES over ≥ 100 intervals; 4 px → YES within `YES_VOTES` intervals; 2 px → YES; 1 px → NO | 4 | |

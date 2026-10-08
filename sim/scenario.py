@@ -10,7 +10,8 @@ and their arrangement, the calibration's blend, the camera) and what happens ove
                                so no perturbation may start before it
   content                      what is shown (``sim/sequence.py``)
   perturbation                 how projectors drift (``sim/perturb.py``)
-  nuisances                    camera bump, lamp dimming, ... (Phase 2b)
+  nuisances                    camera bump, lamp dimming, room light, occluder, flicker, sharpening
+                               (``sim/nuisance.py``); they never misalign, so truth stays aligned
   reference                    whether the source feed exists, and the display lag
 
 ``extends`` and ``sweep`` are resolved first (``sim/sweep.py``). Each module parses and checks
@@ -33,16 +34,18 @@ from typing import Any
 
 import numpy as np
 
-from sim import arrangements, fiducials, perturb
+from sim import arrangements, camera, fiducials, nuisance, perturb, projector, screen
 from sim.calibration import RAMPS, CalibrationSetup
 from sim.camera import Camera
-from sim.cfg import check_keys, choice, integer, num, pair, require, seconds
+from sim.cfg import check_keys, choice, integer, num, require, seconds
 from sim.fiducials import MarkerSet
+from sim.nuisance import Nuisances
 from sim.perturb import Perturbation
-from sim.planar import homography_from_points, raster_corners
+from sim.pictures import ContentGeometry
+from sim.planar import apply_h, homography_from_points, raster_corners
 from sim.projector import Projector
 from sim.render import QUALITY, Quality, Renderer
-from sim.screen import Bezel, Screen
+from sim.screen import Screen
 from sim.sequence import Sequence
 from sim.sequence import from_config as sequence_from_config
 from sim.sweep import expand, load_yaml
@@ -52,9 +55,6 @@ _TOP_KEYS = _REQUIRED_KEYS | {
     "name", "description", "seed", "quality", "blend", "duration_s", "sample_every_s", "trusted_window_s",
     "perturbation", "nuisances", "reference",
 }
-_PROJECTOR_KEYS = {"resolution", "gamma", "brightness", "black_level", "color_balance"}
-_CAMERA_OPTICS = {"psf_sigma_px", "well_fill_at_white", "full_well_e", "read_noise_e", "pedestal_dn", "vignetting", "gamma"}
-_CAMERA_KEYS = _CAMERA_OPTICS | {"preset", "resolution", "margin", "keystone", "color", "exposure_s", "phase_s"}
 
 
 @dataclass(frozen=True, eq=False)
@@ -69,6 +69,7 @@ class Scene:
     markers: MarkerSet | None
     quality: Quality
     seed: int
+    camera_preset: str = "whole_screen"
 
     def renderer(self) -> Renderer:
         return Renderer(self.screen, self.projectors, self.setup, self.camera, self.quality, self.markers)
@@ -102,6 +103,7 @@ class Scenario:
     sequence: Sequence
     perturbations: tuple[Perturbation, ...]
     reference: dict[str, Any]
+    nuisances: Nuisances = Nuisances()
 
     def content_image(self, i: int = 0) -> np.ndarray:
         """The first picture shown during frame i."""
@@ -185,33 +187,44 @@ def scenario_from_dict(
         data["quality"] = quality
     seed = integer(data.get("seed", 0), "seed")
     screen_cfg = dict(data["screen"])
-    screen = _screen(screen_cfg)
-    projectors = _projectors(data["projectors"])
+    the_screen = screen.from_config(screen_cfg)
+    projectors = projector.from_config(data["projectors"])
     res = {n: p.resolution for n, p in projectors.items()}
-    arrangement = arrangements.from_config(data["arrangement"], screen.size_mm, res)
+    arrangement = arrangements.from_config(data["arrangement"], the_screen.size_mm, res)
     blend = dict(data.get("blend", {}))
-    check_keys(blend, {"shape"}, "blend")
+    check_keys(blend, {"shape", "black_uplift"}, "blend")
+    uplift = blend.get("black_uplift", False)
+    if not isinstance(uplift, bool):
+        raise ValueError("blend.black_uplift: expected true or false")
     setup = CalibrationSetup(
         h_cal={n: homography_from_points(raster_corners(res[n]), arrangement.corners[n]) for n in ("a", "b")},
         resolution=res,
         content_rect_mm=arrangement.content_rect_mm,
         blend_shape=choice(blend.get("shape", "cosine"), tuple(RAMPS), "blend.shape"),
+        black_uplift=uplift,
     )
     inner = setup.inner_edges()
     if not inner["a"] and not inner["b"]:
         raise ValueError("arrangement: neither projector fades anywhere; the boxes do not overlap inside the content")
     markers_cfg = screen_cfg.get("bezel", {}).get("markers") if isinstance(screen_cfg.get("bezel"), Mapping) else None
-    markers = None if markers_cfg is None else fiducials.from_config(markers_cfg, screen, setup.overlap())
-    camera, exposure, phase = _camera(dict(data["camera"]), screen)
+    markers = None if markers_cfg is None else fiducials.from_config(markers_cfg, the_screen, setup.overlap())
+    cam, preset, exposure, phase = camera.from_config(data["camera"], the_screen.size_mm, setup.overlap())
     if markers is not None:
-        seen = fiducials.visible(markers, camera.h_mm_to_px, camera.resolution)
+        seen = fiducials.visible(markers, cam.h_mm_to_px, cam.resolution)
         hidden = sorted(set(range(len(markers.centres_mm))) - set(seen))
-        if hidden:
+        if preset == "whole_screen" and hidden:
             raise ValueError(f"markers {hidden} fall outside the camera frame")
+        if len(seen) < 4:
+            raise ValueError(f"camera: only markers {seen} are in view; the detector needs at least 4")
+    if preset == "zoomed":
+        corners = apply_h(cam.h_mm_to_px, setup.overlap())
+        w, h = cam.resolution
+        if corners.min() < 0 or corners[:, 0].max() > w - 1 or corners[:, 1].max() > h - 1:
+            raise ValueError("camera: the zoomed field does not hold the whole overlap; lower px_per_mm")
     quality_name = data.get("quality", "standard")
     if quality_name not in QUALITY:
         raise ValueError(f"quality must be one of {sorted(QUALITY)}, got {quality_name!r}")
-    scene = Scene(name, screen, projectors, setup, camera, markers, QUALITY[quality_name], seed)
+    scene = Scene(name, the_screen, projectors, setup, cam, markers, QUALITY[quality_name], seed, preset)
 
     sample = seconds(data.get("sample_every_s", "1/2"), "sample_every_s")
     timing = Timing(
@@ -235,58 +248,19 @@ def scenario_from_dict(
     reference = {"available": available, "lag_s": lag}
     # The projectors show content(t - lag); the content must last until the last exposure ends.
     shown_until = timing.time(timing.n_frames - 1) + exposure - lag
-    sequence = sequence_from_config(data["content"], seed, setup.content_size(), shown_until, lag=lag)
+    size = setup.content_size()
+    x0, _, x1, _ = setup.content_rect_mm
+    geometry = ContentGeometry(px_per_mm=size[0] / (x1 - x0),
+                               overlap_px=apply_h(np.linalg.inv(setup.content_to_mm(size)), setup.overlap()))
+    sequence = sequence_from_config(data["content"], seed, size, shown_until, geometry, lag=lag)
     perturbations = perturb.from_config(data.get("perturbation"), setup)
     for p in perturbations:
         if p.schedule.onset is not None and p.schedule.onset < timing.trusted_window:
             raise ValueError(f"perturbation of {p.projector} starts at {float(p.schedule.onset):g} s, inside the "
                              f"{float(timing.trusted_window):g} s trusted window after calibration")
-    if data.get("nuisances"):
-        raise ValueError("nuisances: not available yet (Phase 2b)")
-    return Scenario(name, variant or name, data, scene, timing, sequence, perturbations, reference)
-
-
-def _screen(cfg: dict[str, Any]) -> Screen:
-    check_keys(cfg, {"size_mm", "reflectance", "ambient", "wall_reflectance", "bezel"}, "screen")
-    if "size_mm" not in cfg:
-        raise ValueError("screen: size_mm is required")
-    bezel_cfg = dict(cfg.get("bezel", {}) or {})
-    check_keys(bezel_cfg, {"width_mm", "reflectance", "light", "markers"}, "screen.bezel")
-    bezel = Bezel(**{k: num(v, f"screen.bezel.{k}") for k, v in bezel_cfg.items() if k != "markers"})
-    values = {k: num(v, f"screen.{k}") for k, v in cfg.items() if k not in ("size_mm", "bezel")}
-    return Screen(size_mm=pair(cfg["size_mm"], "screen.size_mm"), bezel=bezel, **values)
-
-
-def _projectors(cfg: Mapping[str, Any]) -> dict[str, Projector]:
-    # Projectors are addressed by name everywhere (box_a, width_a_mm, "A only"), never by order.
-    if not isinstance(cfg, Mapping) or set(cfg) != {"a", "b"}:
-        raise ValueError(f"projectors: exactly two, named a and b; got {sorted(cfg) if isinstance(cfg, Mapping) else cfg}")
-    out = {}
-    for name in ("a", "b"):
-        p = dict(cfg[name])
-        check_keys(p, _PROJECTOR_KEYS, f"projectors.{name}")
-        if "resolution" not in p:
-            raise ValueError(f"projectors.{name}: resolution is required")
-        resolution = pair(p.pop("resolution"), f"projectors.{name}.resolution", int)
-        kwargs: dict[str, Any] = {k: num(v, f"projectors.{name}.{k}") for k, v in p.items() if k != "color_balance"}
-        if "color_balance" in p:
-            kwargs["color_balance"] = tuple(num(c, f"projectors.{name}.color_balance") for c in p["color_balance"])
-        out[name] = Projector(name=name, resolution=resolution, **kwargs)
-    return out
-
-
-def _camera(cfg: dict[str, Any], screen: Screen) -> tuple[Camera, Fraction, Fraction]:
-    check_keys(cfg, _CAMERA_KEYS, "camera")
-    preset = cfg.pop("preset", "whole_screen")
-    if preset != "whole_screen":
-        raise ValueError("camera: only the whole_screen preset exists so far")
-    if "resolution" not in cfg:
-        raise ValueError("camera: resolution is required")
-    resolution = pair(cfg.pop("resolution"), "camera.resolution", int)
-    exposure = seconds(cfg.pop("exposure_s", "1/30"), "camera.exposure_s")
-    phase = seconds(cfg.pop("phase_s", 0), "camera.phase_s")
-    color = choice(cfg.pop("color", "mono"), ("mono", "rgb"), "camera.color")
-    optics: dict[str, Any] = {k: num(v, f"camera.{k}") for k, v in cfg.items()}
-    if "pedestal_dn" in optics:
-        optics["pedestal_dn"] = integer(optics["pedestal_dn"], "camera.pedestal_dn")
-    return Camera.whole_screen(screen.size_mm, resolution, color=color, **optics), exposure, phase
+    nuisances = nuisance.from_config(data.get("nuisances"), setup.names, the_screen.size_mm, seed)
+    for onset in nuisances.onsets:
+        if onset < timing.trusted_window:
+            raise ValueError(f"a nuisance starts at {float(onset):g} s, inside the {float(timing.trusted_window):g} s "
+                             "trusted window after calibration")
+    return Scenario(name, variant or name, data, scene, timing, sequence, perturbations, reference, nuisances)

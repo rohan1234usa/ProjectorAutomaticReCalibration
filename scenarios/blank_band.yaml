@@ -1,0 +1,15 @@
+# Question: with nothing textured inside the overlap, can the hotspot fit and the boundary carry
+# the check? Photos and slides whose overlap region is flat gray; shifts of 0, 1 and 2 px at 615 s.
+extends: _lecture_hall.yaml
+name: blank_band
+seed: 111
+duration_s: 1200
+content:
+  loop: true
+  items:
+    - {type: photo, pictures: 10, hold_s: 30, blank_overlap: 0.5, border_frac: 0.05}
+    - {type: deck, densities: [medium], slides: 4, hold_s: 30, blank_overlap: 0.6, border_frac: 0.05}
+perturbation:
+  b: {kind: shift, magnitude_px: 2, direction: across, schedule: {type: step, t0_s: 615}}
+sweep:
+  perturbation.b.magnitude_px: [0, 1, 2]

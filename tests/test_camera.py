@@ -92,3 +92,20 @@ def test_encoding_pedestal_and_saturation():
     assert np.allclose(cam.decode(cam.encode(e)), e, atol=0.5 / cam.gain_dn_per_e)
     gamma_cam = Camera.whole_screen(SCREEN, (64, 32), gamma=2.2)
     assert np.allclose(gamma_cam.decode(gamma_cam.encode(e)), e, rtol=1e-3, atol=2.0)
+
+
+def test_zoomed_preset_frames_the_overlap_in_portrait():
+    from sim.fiducials import MarkerSet, auto_layout, visible
+    from sim.planar import rect_polygon
+    from sim.screen import Bezel, Screen
+
+    screen = Screen((4000.0, 1500.0), bezel=Bezel(width_mm=150.0))
+    overlap = rect_polygon(1795.0, 187.65, 2205.0, 1312.35)
+    cam = Camera.zoomed(screen.size_mm, overlap, (3840, 1600), px_per_mm=1.74)
+    assert cam.px_per_mm_at_centre() == pytest.approx(1.74, rel=0.03)
+    corners = apply_h(cam.h_mm_to_px, overlap)
+    assert corners.min() > 0 and corners[:, 0].max() < 3839 and corners[:, 1].max() < 1599
+    down = apply_h(cam.h_mm_to_px, np.array([[2000.0, 700.0], [2000.0, 800.0]]))
+    assert down[1, 0] > down[0, 0]  # portrait: screen +y runs along the image's long side
+    markers = MarkerSet(auto_layout(screen, overlap, 80.0, 1))
+    assert visible(markers, cam.h_mm_to_px, cam.resolution) == [4, 5, 6, 7]

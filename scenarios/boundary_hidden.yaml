@@ -1,0 +1,17 @@
+# Question: how often is the boundary unavailable, and does the overlap check catch what the
+# boundary cannot? Letterboxed photos and video: bars hide the content border at the top and
+# bottom, so only the faint black level shows those raster edges, while the bright overlap hides
+# the inner edges. An aligned twin and a 2 px shift across at 615 s.
+extends: _lecture_hall.yaml
+name: boundary_hidden
+seed: 101
+duration_s: 1200
+content:
+  loop: true
+  items:
+    - {type: photo, pictures: 6, hold_s: 20, letterbox: 0.12}
+    - {type: video, style: photo, duration_s: 120, fps: 30, cut_s: 6, letterbox: 0.12}
+perturbation:
+  b: {kind: shift, magnitude_px: 2, direction: across, schedule: {type: step, t0_s: 615}}
+sweep:
+  perturbation.b.magnitude_px: [0, 2]

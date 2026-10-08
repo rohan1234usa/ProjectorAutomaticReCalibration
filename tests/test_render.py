@@ -196,3 +196,23 @@ def test_aligned_slide_blend_adds_no_error_and_misalignment_does():
     shifted = overlap_error(r.screen_radiance(content, {"b": translation(setup.pixel_pitch_mm("b"), 0) @ setup.h_cal["b"]}))
     assert blended <= 1.02 * alone
     assert shifted > 2.5 * blended
+
+
+def test_black_level_uplift_makes_black_uniform_until_a_projector_moves():
+    """With compensation, single coverage gets the partner's black too: no brighter overlap on black."""
+    from dataclasses import replace
+
+    setup = replace(side_by_side_setup(), black_uplift=True)
+    r = make_renderer(setup)
+    black = flat(setup.content_size(), 0.0)
+    rad = r.screen_radiance(black)
+    box_a, box_b = setup.box_mm("a"), setup.box_mm("b")
+    y = box_a[:, 1].mean()
+    overlap = sample_grid(r.grid, rad, (box_a[:, 0].max() + box_b[:, 0].min()) / 2, y)
+    only_a = sample_grid(r.grid, rad, (box_a[:, 0].min() + box_b[:, 0].min()) / 2, y)
+    only_b = sample_grid(r.grid, rad, (box_a[:, 0].max() + box_b[:, 0].max()) / 2, y)
+    assert only_a == pytest.approx(overlap, rel=1e-5) and only_b == pytest.approx(overlap, rel=1e-5)
+    # After B moves 3 mm right, A's lift no longer meets B's edge: a dark gap opens at B's old edge.
+    moved = r.screen_radiance(black, {"b": translation(3.0, 0) @ setup.h_cal["b"]})
+    gap = sample_grid(r.grid, moved, box_b[:, 0].min() + 1.5, y)
+    assert gap < overlap - 0.5 * r.screen.reflectance * r.projectors["b"].black_level

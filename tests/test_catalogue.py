@@ -31,10 +31,28 @@ def test_scenario_and_all_its_variants_load(path):
             assert all(p.schedule.onset is None or p.schedule.onset >= DETECTOR.TRUSTED_WINDOW_S for p in v.perturbations)
 
 
+def _event_frames(scenario) -> list[int]:
+    """Frame 0 and the first frame at or after every perturbation and nuisance onset."""
+    timing = scenario.timing
+    onsets = [p.schedule.onset for p in scenario.perturbations if p.schedule.onset is not None]
+    onsets += scenario.nuisances.onsets
+    frames = {0}
+    for onset in onsets:
+        i = max(0, -((timing.phase - onset) // timing.sample_every))  # ceil((onset - phase) / sample)
+        if i < timing.n_frames:
+            frames.add(int(i))
+    return sorted(frames)
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("path", SCENARIOS, ids=[p.stem for p in SCENARIOS])
-def test_first_frame_renders(path):
-    scenario = load_scenarios(path, quality="fast")[0]
-    frame = FrameSource(scenario).frame(0)
-    w, h = scenario.scene.camera.resolution
-    assert frame.shape == (h, w) and frame.dtype.name == "uint16"
+def test_event_frames_render(path):
+    """The first and last variant of every scenario render at frame 0 and at each onset."""
+    variants = load_scenarios(path, quality="fast")
+    for scenario in {id(v): v for v in (variants[0], variants[-1])}.values():
+        source = FrameSource(scenario)
+        w, h = scenario.scene.camera.resolution
+        for i in _event_frames(scenario):
+            frame = source.frame(i)
+            assert frame.shape == (h, w) and frame.dtype.name == "uint16", (scenario.variant, i)
+            assert 0 < frame.mean() < 60000

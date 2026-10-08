@@ -11,8 +11,8 @@ OUT/<variant>/, plus OUT/variants.json.
                    (default 600: one per 5 minutes) and wherever a projector's geometry changes
   --frames all     every frame stored (about 8 MB each; refused above --max-gb)
 
-Variants run in parallel with --jobs; the output does not depend on it. Prints one JSON line
-per variant, then a summary.
+Variants run in parallel with --jobs (a single variant splits its frames across the jobs
+instead); the output does not depend on it. Prints one JSON line per variant, then a summary.
 """
 
 from __future__ import annotations
@@ -39,9 +39,10 @@ def _init_worker(threads: int) -> None:
     cv2.setNumThreads(threads)
 
 
-def _write(scenario_path: str, quality: str | None, variant: str, out_dir: str, frames: str, every: int) -> dict:
+def _write(scenario_path: str, quality: str | None, variant: str, out_dir: str, frames: str, every: int,
+           jobs: int = 1) -> dict:
     scenario = load_scenario(scenario_path, quality=quality, variant=variant)
-    return write_dataset(scenario, out_dir, frames=frames, every=every)
+    return write_dataset(scenario, out_dir, frames=frames, every=every, jobs=jobs)
 
 
 def main(argv: list[str] | None = None) -> list[dict]:
@@ -69,7 +70,9 @@ def main(argv: list[str] | None = None) -> list[dict]:
     jobs = [(str(args.scenario), args.quality, s.variant, str(args.out / s.variant if swept else args.out),
              args.frames, args.every) for s in chosen]
     started = time.perf_counter()
-    if args.jobs > 1 and len(jobs) > 1:
+    if args.jobs > 1 and len(jobs) == 1:  # one variant: split its frames across the workers instead
+        results = [_write(*jobs[0], jobs=args.jobs)]
+    elif args.jobs > 1:
         threads = max(1, (os.cpu_count() or 1) // args.jobs)
         context = multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(args.jobs, mp_context=context, initializer=_init_worker, initargs=(threads,)) as pool:

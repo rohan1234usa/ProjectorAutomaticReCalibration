@@ -1,0 +1,18 @@
+# Question: what is the false-positive rate under motion, fast motion, cuts and dark scenes?
+# Aligned throughout: the 600 s trusted window, then 20 checked minutes cycling through an
+# ordinary clip (cuts every 8 s, a slow pan), a fast one (cuts every 3 s, fast pan and objects),
+# a dark film with fades, and two slides. Every exposure (1/30 s) spans two video frames. The
+# source feed is available, and the projectors show it 0.1 s (3 frames at 30 fps) after it is sent.
+extends: _lecture_hall.yaml
+name: aligned_video
+seed: 61
+duration_s: 1800
+content:
+  loop: true
+  items:
+    - {type: video, style: photo, duration_s: 180, fps: 30, cut_s: 8, pan_px_per_s: [120, 0], objects: 6, speed_px_per_s: 300}
+    - {type: video, style: photo, duration_s: 60, fps: 30, cut_s: 3, pan_px_per_s: [600, 90], objects: 10, speed_px_per_s: 1200}
+    - {type: video, style: dark, duration_s: 120, fps: 24, cut_s: 12, fade_s: 2, pan_px_per_s: [40, 0], objects: 3, speed_px_per_s: 150}
+    - {type: deck, densities: [medium], slides: 2, hold_s: 37, border_frac: 0.05}
+reference: {available: true, lag_s: 0.1}
+perturbation: none

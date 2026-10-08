@@ -1,0 +1,19 @@
+# Question: in dark scenes and fades, does each projector's black level show its raster edges well
+# enough? A dim film with fades at every cut, dark stills and black; shifts of 0 and 2 px at 615 s,
+# with and without black-level compensation (the blending software lifting single-coverage black
+# to the overlap's double black, which hides the inner edges while aligned).
+extends: _lecture_hall.yaml
+name: dark_film
+seed: 121
+duration_s: 1200
+content:
+  loop: true
+  items:
+    - {type: video, style: dark, duration_s: 240, fps: 24, cut_s: 12, fade_s: 2, pan_px_per_s: [30, 0], objects: 3, speed_px_per_s: 120}
+    - {type: dark, pictures: 4, hold_s: 15}
+    - {type: black, hold_s: 10}
+perturbation:
+  b: {kind: shift, magnitude_px: 2, direction: across, schedule: {type: step, t0_s: 615}}
+sweep:
+  perturbation.b.magnitude_px: [0, 2]
+  blend.black_uplift: [false, true]

@@ -385,3 +385,154 @@ A review of the change found nine problems. All are fixed, each with a test.
 8. **The pairing check** now compares only variants that differ in nothing but their
    perturbation, so sweeps over the scene (ambient, arrangement, camera) are not paired.
 9. **Seeds** are read as exact integers (2⁵³ + 1 stays itself).
+
+## 2026-10-07 — Phase 2b: the rest of the simulator (library, nuisances, zoomed camera, reference feed)
+
+**Done condition met.**
+- **Every §7 scenario loads and renders its event frames.** That is the first and last variant
+  of each of the 16 files, at frame 0 and at every perturbation or nuisance onset (`pytest -m
+  slow`).
+- **Reproducible:** `camera_zoomed` (6 variants), `aligned_nuisances` (7), `boundary_hidden`
+  (2) and `aligned_video` (1) were generated twice, with `--jobs 4` and `--jobs 5`. Every file
+  except `timing.json` and `dataset.json` is byte-identical, which covers 48,000 frames per run.
+  `aligned_video` was split over frame ranges, 4 ways and 5 ways.
+- **Checks pass:** `check_dataset` passes on all of them.
+  - Truth stays aligned throughout the nuisance runs.
+  - Elsewhere every frame's offset equals the requested shift.
+  - Paired variants share all 9,840 of their pre-onset frames.
+- **Zoomed camera:** markers 4–7 are found in every sampled frame at 1.73 px/mm at the image
+  centre, with centre error p50 0.032, p95 0.071, max 0.073 px (20 sightings in 5 frames).
+- **Nuisance physics** (tests on tiny scenes), with truth aligned and `offset_mm` exactly 0
+  throughout:
+  - lamp dimming to 0.85 scales that projector's light by exactly 0.85, black level included;
+  - a room-light step from 0.02 to 0.05 raises the unlit screen 2.5×;
+  - a camera knock of (5, −3) px moves every marker by exactly that;
+  - a person walking past darkens the screen behind them to 0.2–0.5 and hides the markers they
+    cover;
+  - flicker vanishes when the exposure spans whole periods, and makes rolling-shutter bands
+    when it doesn't;
+  - sharpening adds halos without changing the level.
+- **Video:** an exposure that straddles two video frames mixes them in exact shares (7/10 and
+  3/10).
+- **Reference feed:** sends are timestamped on the sending clock, and the projectors show
+  content(t − `lag_s`).
+
+### What 2b built
+
+- `sim/pictures.py` — content item kinds and how each is drawn:
+  - photo-like stills (1/f^1.2 texture and soft objects);
+  - dark film stills;
+  - sinusoidal stripes of a given period in screen mm;
+  - video;
+  - options on every item: `border_frac`, `letterbox`, `blank_overlap`.
+- `sim/textures.py` and `sim/video.py`:
+  - clips at any fps, with cuts, wrap-around pans, bouncing objects and fades;
+  - the background is periodic by construction, so pans have no seam.
+- `sim/nuisance.py` and `sim/flicker.py`: camera bump, lamp dimming, room light, occluder,
+  in-camera sharpening, and flicker. Flicker is a closed-form row gain that averages the
+  modulation over each row's exposure window.
+- `sim/state.py`: the frame state.
+- `sim/frames.py`:
+  - composition with per-projector gains and per-row flicker weights;
+  - the occluder, and sharpening after noise;
+  - per-camera-knock component caches;
+  - the reference feed, `FrameSource.source(i)`.
+- **Black-level uplift** (`blend.black_uplift`): each projector adds its partner's black level
+  where the partner does not reach. It is built at calibration and reported in `setup.json`.
+- **The zoomed camera preset:**
+  - it frames the overlap across, and the full height plus the bezel along, with the sensor's
+    long side along the overlap (portrait for side by side);
+  - it is validated to hold the whole overlap and at least 4 markers.
+- **Scenario files and datasets:**
+  - each module parses its own block (screen, projectors, camera);
+  - `key: null` in a scenario removes a key inherited from its base;
+  - long single-variant datasets render in parallel over frame ranges, with byte-identical
+    output.
+- **The rest of the §7 catalogue:**
+  - `held_slide`, `aligned_video`, `aligned_nuisances` (7 variants), `slow_drift`;
+  - `arrangements` (30 variants: 6 presets × 5 sizes), `boundary_hidden`, `blank_band`,
+    `dark_film`;
+  - `repetition_limit` (8), `camera_zoomed` (6), `dark_room` (2).
+
+### Numbers
+
+**Rendering** (demo scale, standard quality; CPU time per frame in each worker):
+
+| Dataset | Frames per variant | ms per frame | Wall time of a run (`--jobs 4`) |
+|---|---|---|---|
+| `aligned_nuisances` (7 variants) | 3600 | 39–47 | 367 s |
+| `camera_zoomed` (6 variants) | 2400 | 33–55 | 239 s |
+| `boundary_hidden` (2 variants; half photos, half video) | 2400 | 159–171 | 424 s |
+| `aligned_video` (split 4 ways) | 3600 | 735 | 677 s |
+
+Every video frame is new content, and every exposure holds two video frames, so each frame
+renders both projectors anew. Sizes per run: 397, 288, 91 and 55 MB, mostly the sample PNGs.
+
+- **Phase 2a datasets still re-render bit-identically.** Frames and truth of `aligned_slides`
+  and `shift_sweep` match their stored hashes. Only `metadata.jsonl` gained the nuisance fields
+  (`lamp_gain`, `camera_bump`, `occluder`, `flicker`, `sharpening`).
+- **Stripes at a half-period shift.** The grating is sinusoidal in light, so with 8 mm stripes
+  and B shifted 4 mm the two copies cancel to flat gray where the blend weights are equal (the
+  middle of the overlap). Elsewhere a residual contrast of |a − b| remains. This is the aliasing
+  the echo test must not take for alignment, and the case `repetition_limit` exists for.
+
+### Departures and choices (raised, not silently changed)
+
+1. **Photo statistics.** The texture's amplitude spectrum falls as 1/f^1.2, the middle of the
+   natural-image range (1.0–1.4). With 1/f, a 2 px pan changed a frame by 12% on average.
+2. **Flicker** is modelled as a sinusoid per projector, with a fixed random phase from the seed
+   and no per-frame randomness. Real DLP colour-wheel modulation is not sinusoidal; the
+   closed-form average is exact for this model.
+3. **Occluder:**
+   - a flat silhouette (head, body, legs) in front of the screen;
+   - lit like the screen behind it, with reflectance 0.3;
+   - it covers the bezel and wall too;
+   - no cast shadow.
+4. **Camera bumps** are quantized to 1% of their size, so a bump that settles gives few cached
+   views.
+5. **Screen gain** (a high-gain screen's hotspot) is not built. It would need a gain map per
+   projector, and none of the planned detector phases needs it yet.
+6. **`dark_room`** has no perturbation and lasts 5 minutes: it only asks whether markers can be
+   found, with or without the bezel lamp, and what averaging buys.
+7. **`aligned_nuisances`** runs one nuisance per variant, plus one variant with all of them.
+   Flicker and sharpening are installation properties, present from calibration on; the others
+   start after the trusted window.
+8. **`boundary_hidden` probably does not hide the boundary from the whole-screen camera.** This
+   is a prediction to check in Phase 4, not a redesign.
+   - The letterbox bars cross the overlap, so both inner edges show through black level: about
+     9 e⁻ against 17 e⁻ of noise per pixel, which is SNR ≈ 6 per frame along a 117-row bar.
+   - The left and right outer edges are strong content borders.
+   - If so, the brief's question ("how often is the boundary unavailable?") gets the answer
+     "rarely", and Phase 6c's done condition will need content whose overlap is never dark.
+9. **Scenarios that use the reference feed:** `aligned_video` (lag 0.1 s, i.e. 3 video frames,
+   with cuts) and `repetition_limit` (lag 0.1 s). `dark_film` sweeps black-level uplift on and
+   off.
+
+### Code review before committing (2b)
+
+A review found ten problems and a minor one. One of them, `boundary_hidden`, is the prediction
+in item 8 above. The others are fixed, with tests wherever they concern code:
+
+1. **Flicker was frozen.** Frames are 0.5 s apart, exactly 50 cycles of 100 Hz, so every frame
+   caught the same phase and the bands never moved: the flicker went into the baseline and
+   could never trouble the detector. Each frame now draws its own phase (spawn key (2, flicker,
+   frame)), since the camera's clock is not locked to the projector's.
+2. **`repetition_limit` held one static picture.** The variety gate would have starved the echo
+   pools. It now shows 40 stripe pictures at random phases, with the source feed on. Its
+   comment no longer claims the reference kernel can see a whole-period shift: for periodic
+   content the kernel is periodic too.
+3. **`blank_overlap` painted gray over the black border and the letterbox bars** inside the
+   overlap. It now fills only the picture area.
+4. **Stripes were sinusoidal in code values.** After gamma 2.2 that meant a second harmonic at
+   20%, so a half-period shift did not cancel. They are now sinusoidal in light.
+5. **The reference feed was anchored at the exposure's start.** With no lag it missed the
+   newest picture shown during the exposure. It now lists what was sent before the exposure
+   ends.
+6. **A camera bump, lamp or room-light nuisance without a schedule** silently did nothing. A
+   schedule is now required, as for perturbations.
+7. **`cut_in_exposure` was true for every video frame**, since each exposure spans two. It now
+   flags only real changes (a cut, a new picture). The new `frames_in_exposure` counts the
+   pictures.
+8. **No scenario used uplift, the reference feed or a lag.** See item 9 above.
+9. **Placeholders in this entry.**
+10. **`visualize.py` placed its level patches with the camera before any knock.**

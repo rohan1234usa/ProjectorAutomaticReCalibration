@@ -5,7 +5,11 @@ Physics, in the order light goes through it:
 1. Geometry. A pinhole camera looking at a flat screen maps it to the image with a homography
    (mm to camera pixels). The ``whole_screen`` preset frames the screen with a 5% margin and a
    slight keystone (top edge a little narrower), as a camera mounted below the screen's centre
-   would see it. The bezel and its markers fall inside that margin.
+   would see it. The bezel and its markers fall inside that margin. The ``zoomed`` preset frames
+   only the overlap, its control strips and the bezel markers at its two ends, at a chosen
+   resolution on the screen (1.74 px/mm by default, twice the whole-screen camera's); the sensor
+   is turned so its long side runs along the overlap. A camera that is knocked keeps its optics
+   but sees everything shifted and turned in the image (:meth:`Camera.moved`).
 2. Optics. The lens blurs every point into a small spot, the point-spread function, modelled as
    a Gaussian of ``psf_sigma_px``. It also darkens the image towards the corners (vignetting,
    the cos^4 law: falloff (1 + a r^2)^-2). The blur happens before the sensor samples the image,
@@ -31,12 +35,16 @@ here accepts (rows, cols) or (rows, cols, 3) radiance.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from fractions import Fraction
 from functools import cached_property
+from typing import Any
 
 import cv2
 import numpy as np
 
+from sim.cfg import check_keys, choice, integer, num, pair, seconds
 from sim.planar import apply_h, homography_from_points, jacobian_det, warp_linear
 from sim.screen import ScreenGrid
 
@@ -91,6 +99,41 @@ class Camera:
                           [cx + half_w, cy + half_h], [cx - half_w, cy + half_h]])
         screen = np.array([[0.0, 0.0], [sw, 0.0], [sw, sh], [0.0, sh]])
         return cls(resolution=resolution, h_mm_to_px=homography_from_points(screen, image), **optics)
+
+    @classmethod
+    def zoomed(
+        cls,
+        screen_size_mm: tuple[float, float],
+        overlap_mm: np.ndarray,
+        resolution: tuple[int, int],
+        px_per_mm: float = 1.74,
+        keystone: float = 0.02,
+        **optics: float | str,
+    ) -> Camera:
+        """Camera framing the overlap, its control strips and the bezel markers at its two ends.
+
+        The sensor's long side runs along the overlap's long axis (a portrait mount for a vertical
+        overlap). The field is centred on the overlap across it and on the screen along it.
+        """
+        cw, ch = resolution
+        lo, hi = np.min(overlap_mm, axis=0), np.max(overlap_mm, axis=0)
+        vertical = (hi[1] - lo[1]) >= (hi[0] - lo[0])
+        portrait = vertical == (cw >= ch)  # the sensor's long side must follow the overlap
+        sw, sh = screen_size_mm
+        centre = np.array([(lo[0] + hi[0]) / 2, sh / 2] if vertical else [sw / 2, (lo[1] + hi[1]) / 2])
+        uc, vc, s = (cw - 1) / 2, (ch - 1) / 2, px_per_mm
+        half = np.array([ch, cw]) / (2 * s) if portrait else np.array([cw, ch]) / (2 * s)  # field half-size (x, y), mm
+        field = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]]) * half + centre
+        d = field - centre
+        # Portrait: screen +y runs along the image's u axis and screen +x up it (a -90 degree turn).
+        image = np.stack([uc + s * d[:, 1], vc - s * d[:, 0]] if portrait else [uc + s * d[:, 0], vc + s * d[:, 1]], axis=-1)
+        top = image[:, 1] < vc
+        image[top, 0] = uc + (image[top, 0] - uc) * (1 - keystone)  # the image's top edge a little narrower
+        return cls(resolution=resolution, h_mm_to_px=homography_from_points(field, image), **optics)
+
+    def moved(self, image_transform: np.ndarray) -> Camera:
+        """The same camera after a knock: its image of everything moves by `image_transform`."""
+        return replace(self, h_mm_to_px=np.asarray(image_transform) @ self.h_mm_to_px)
 
     @property
     def gain_dn_per_e(self) -> float:
@@ -199,3 +242,31 @@ class Camera:
             "full_well_e": float(self.full_well_e),
             "read_noise_e": float(self.read_noise_e),
         }
+
+
+_OPTICS = {"psf_sigma_px", "well_fill_at_white", "full_well_e", "read_noise_e", "pedestal_dn", "vignetting", "gamma"}
+_KEYS = _OPTICS | {"preset", "resolution", "margin", "keystone", "px_per_mm", "color", "exposure_s", "phase_s"}
+
+
+def from_config(cfg: Mapping[str, Any], screen_size_mm: tuple[float, float], overlap_mm: np.ndarray
+                ) -> tuple[Camera, str, Fraction, Fraction]:
+    """Parse a scenario's ``camera`` block: (camera, preset, exposure_s, phase_s)."""
+    cfg = dict(cfg)
+    check_keys(cfg, _KEYS, "camera")
+    preset = choice(cfg.pop("preset", "whole_screen"), ("whole_screen", "zoomed"), "camera.preset")
+    if "resolution" not in cfg:
+        raise ValueError("camera: resolution is required")
+    resolution = pair(cfg.pop("resolution"), "camera.resolution", int)
+    exposure = seconds(cfg.pop("exposure_s", "1/30"), "camera.exposure_s")
+    phase = seconds(cfg.pop("phase_s", 0), "camera.phase_s")
+    color = choice(cfg.pop("color", "mono"), ("mono", "rgb"), "camera.color")
+    if preset == "whole_screen" and "px_per_mm" in cfg:
+        raise ValueError("camera: px_per_mm belongs to the zoomed preset (whole_screen uses margin)")
+    if preset == "zoomed" and "margin" in cfg:
+        raise ValueError("camera: margin belongs to the whole_screen preset (zoomed uses px_per_mm)")
+    optics: dict[str, Any] = {k: num(v, f"camera.{k}") for k, v in cfg.items()}
+    if "pedestal_dn" in optics:
+        optics["pedestal_dn"] = integer(optics["pedestal_dn"], "camera.pedestal_dn")
+    if preset == "zoomed":
+        return Camera.zoomed(screen_size_mm, overlap_mm, resolution, color=color, **optics), preset, exposure, phase
+    return Camera.whole_screen(screen_size_mm, resolution, color=color, **optics), preset, exposure, phase

@@ -60,19 +60,25 @@ def readonly(a: np.ndarray) -> np.ndarray:
     return a
 
 
-def compose(terms: Sequence[tuple[float, np.ndarray]]) -> np.ndarray:
+def _scaled(weight: float | np.ndarray, image: np.ndarray) -> np.ndarray:
+    w = np.float32(weight) if np.isscalar(weight) else np.asarray(weight, dtype=np.float32)
+    return w * image
+
+
+def compose(terms: Sequence[tuple[float | np.ndarray, np.ndarray]]) -> np.ndarray:
     """Weighted sum of component images in the given order: the one way frames are summed.
 
-    A weight of exactly 1 is added without multiplying (x * 1 == x in floating point), which
-    makes the common case six times faster without changing a single bit.
+    A weight is a number, or an array broadcast over the image (a per-row flicker gain). A weight
+    of exactly 1 is added without multiplying (x * 1 == x in floating point), which makes the
+    common case six times faster without changing a single bit.
     """
     weight, image = terms[0]
-    out = image * np.float32(weight)
+    out = _scaled(weight, image)
     for weight, image in terms[1:]:
-        if weight == 1.0:
+        if np.isscalar(weight) and weight == 1.0:
             out += image
         else:
-            out += np.float32(weight) * image
+            out += _scaled(weight, image)
     return out
 
 
@@ -100,6 +106,12 @@ class Renderer:
         self.grid = ScreenGrid.covering_extent(screen.extent_mm, quality.screen_samples_per_px / pitch)
         # The blend maps and the surfaces depend only on the installation, so they are built once.
         self.blend = {n: setup.blend_weights(n) for n in setup.names}
+        self.uplift = {}  # extra light per projector pixel when the software lifts single-coverage black
+        if setup.black_uplift:
+            a, b = setup.names
+            for name, partner in ((a, b), (b, a)):
+                level = projectors[partner].black_level * projectors[partner].brightness
+                self.uplift[name] = readonly(setup.uplift_mask(name) * np.float32(level))
         refl, lamp = surfaces(self.grid, screen)
         if markers is not None:
             paint(refl, self.grid, markers, screen.bezel.reflectance)
@@ -114,7 +126,10 @@ class Renderer:
     def projector_light(self, name: str, content: np.ndarray) -> np.ndarray:
         """Light leaving each pixel of projector `name` for this content (before any lamp gain)."""
         framebuffer = self.setup.framebuffer(name, content)
-        return self.projectors[name].emitted_light(framebuffer, self.blend[name], mono=self.mono)
+        light = self.projectors[name].emitted_light(framebuffer, self.blend[name], mono=self.mono)
+        if name in self.uplift:
+            light += self.uplift[name] if self.mono else self.uplift[name][..., None]
+        return light
 
     def projector_irradiance(self, name: str, light: np.ndarray, h_actual: np.ndarray | None = None) -> np.ndarray:
         """That light on the screen grid, landing through `h_actual` (default: calibrated)."""

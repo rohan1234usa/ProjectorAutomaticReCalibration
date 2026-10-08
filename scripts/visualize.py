@@ -36,6 +36,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from sim.camera import Camera
 from sim.frames import FrameSource
 from sim.planar import apply_h, box_mm, clip_convex, points_in_convex, rect_polygon
 from sim.render import QUALITY
@@ -117,11 +118,13 @@ def deepest_point(pts: np.ndarray, mask: np.ndarray, toward: tuple[float, float]
     return pts[r, c], float(depth[r, c])
 
 
-def measure_levels(scene: Scene, electrons: np.ndarray, regions: Regions) -> dict[str, dict[str, float] | None]:
+def measure_levels(scene: Scene, electrons: np.ndarray, regions: Regions,
+                   camera: Camera | None = None) -> dict[str, dict[str, float] | None]:
     """Mean and per-pixel spread (electrons, all channels) in a small square at each patch."""
     pts, masks = regions
+    camera = camera or scene.camera  # a knocked camera sees each patch elsewhere
     centre = (scene.screen.size_mm[0] / 2, scene.screen.size_mm[1] / 2)
-    px_per_mm = scene.camera.px_per_mm_at_centre()
+    px_per_mm = camera.px_per_mm_at_centre()
     frame_h, frame_w = electrons.shape[:2]
     out: dict[str, dict[str, float] | None] = {}
     for name in ("unlit", "black_a", "black_b", "black_overlap"):
@@ -131,7 +134,7 @@ def measure_levels(scene: Scene, electrons: np.ndarray, regions: Regions) -> dic
             continue
         point, depth_mm = found
         half = max(1, int(0.5 * depth_mm * px_per_mm))  # the square stays inside the inscribed circle
-        u, v = np.rint(apply_h(scene.camera.h_mm_to_px, point)).astype(int)
+        u, v = np.rint(apply_h(camera.h_mm_to_px, point)).astype(int)
         if not (half <= u < frame_w - half and half <= v < frame_h - half):
             out[name] = None  # the camera does not see this patch whole
             continue
@@ -156,10 +159,11 @@ def _dashed(img: np.ndarray, poly_px: np.ndarray, color: tuple[int, int, int], t
             cv2.line(img, tuple(_fixed_point(a)), tuple(_fixed_point(b)), color, thickness, cv2.LINE_AA, shift=4)
 
 
-def overlay_panel(scene: Scene, view: np.ndarray, regions: Regions, boxes: dict[str, np.ndarray]) -> np.ndarray:
+def overlay_panel(scene: Scene, view: np.ndarray, regions: Regions, boxes: dict[str, np.ndarray],
+                  camera: Camera | None = None) -> np.ndarray:
     """The frame dimmed to gray, with box A, box B (where they land now), their overlap, the content rect and the markers."""
     img = np.repeat((view.mean(axis=2, keepdims=True) * 0.55).astype(np.uint8), 3, axis=2)
-    h_cam = scene.camera.h_mm_to_px
+    h_cam = (camera or scene.camera).h_mm_to_px
     a, b = scene.setup.names
     box_a, box_b = boxes[a], boxes[b]
     overlap_px = apply_h(h_cam, clip_convex(box_a, box_b))
@@ -239,7 +243,7 @@ def main(argv: list[str] | None = None) -> dict:
               "  green = overlap (A and B both shine; blended)  |  white dashed = content rect  |  magenta = markers")
     regions = region_masks(scene, border_mm(scenario, args.frame))
     boxes = {n: box_mm(state.h_actual[n], scene.setup.resolution[n]) for n in scene.setup.names}
-    view = np.vstack([view, caption(view.shape[1], text), overlay_panel(scene, view, regions, boxes),
+    view = np.vstack([view, caption(view.shape[1], text), overlay_panel(scene, view, regions, boxes, source.camera_for(state)),
                       caption(view.shape[1], legend)])
     path = out_dir / "view.png"
     cv2.imwrite(str(path), cv2.cvtColor(view, cv2.COLOR_RGB2BGR))
@@ -255,7 +259,7 @@ def main(argv: list[str] | None = None) -> dict:
         "render_s": round(t2 - t1, 3),
         "offset_mm": truth["truth"]["offset_mm"],
     }
-    levels = measure_levels(scene, electrons, regions)
+    levels = measure_levels(scene, electrons, regions, source.camera_for(state))
     white = white_electrons(scene)
     summary["levels"] = levels
     summary["levels_display_255"] = {

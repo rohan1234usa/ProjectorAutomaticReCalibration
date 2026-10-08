@@ -32,9 +32,13 @@ bezel; all light is summed there before the camera looks at it.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
+
+from sim.cfg import check_keys, num, pair
 
 
 @dataclass(frozen=True)
@@ -175,3 +179,15 @@ def surfaces(grid: ScreenGrid, screen: Screen) -> tuple[np.ndarray, np.ndarray]:
         refl[full_rows, c] = (refl[full_rows, c] - bezel) + (bezel * e + wall * (one - e))
         lamp[full_rows, c] = (lamp[full_rows, c] - one) + e
     return refl, lamp
+
+
+def from_config(cfg: Mapping[str, Any]) -> Screen:
+    """Parse a scenario's ``screen`` block (its ``bezel.markers`` are read by ``sim/fiducials.py``)."""
+    check_keys(cfg, {"size_mm", "reflectance", "ambient", "wall_reflectance", "bezel"}, "screen")
+    if "size_mm" not in cfg:
+        raise ValueError("screen: size_mm is required")
+    bezel_cfg = dict(cfg.get("bezel", {}) or {})
+    check_keys(bezel_cfg, {"width_mm", "reflectance", "light", "markers"}, "screen.bezel")
+    bezel = Bezel(**{k: num(v, f"screen.bezel.{k}") for k, v in bezel_cfg.items() if k != "markers"})
+    values = {k: num(v, f"screen.{k}") for k, v in cfg.items() if k not in ("size_mm", "bezel")}
+    return Screen(size_mm=pair(cfg["size_mm"], "screen.size_mm"), bezel=bezel, **values)

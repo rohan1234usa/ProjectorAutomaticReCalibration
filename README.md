@@ -17,14 +17,18 @@ misalignments.
 
 ## Status
 
-Phases 1 and 2a are done. The simulator renders two edge-blended projectors in any of six
+Phases 1 and 2, the simulator, are done. It renders two edge-blended projectors in any of six
 arrangements, on a screen framed by a bezel with printed fiducial markers, through a locked
-16-bit mono camera. It plays slide decks over time, moves the projectors by known amounts
-(shift, rotation, scale, keystone, on any schedule), and records ground truth for every frame.
-`make_dataset` turns a scenario file into a reproducible dataset.
+16-bit mono camera that sees the whole screen or zooms on the overlap. Over time it:
+- plays slides, photos, stripes and synthetic video;
+- moves the projectors by known amounts (shift, rotation, scale, keystone, on any schedule);
+- adds nuisances that must never cause a YES (camera knocks, lamp dimming, room light, people
+  walking past, flicker, sharpening, black-level compensation);
+- records ground truth for every frame.
 
-Next are Phase 2b (video, textures, nuisances, the zoomed camera, the reference feed) and
-Phase 3, where the detector itself starts (CLAUDE.md §8).
+`make_dataset` turns any of the 16 scenario files into a reproducible dataset.
+
+Next is Phase 3, where the detector itself starts: its inputs and geometry (CLAUDE.md §8).
 
 ## Quick start
 

@@ -28,12 +28,17 @@ Physics, in the order light goes through it:
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
+from sim.cfg import check_keys, num, pair
 from sim.planar import box_mm, jacobian_det, raster_corners, translation, warp_linear
 from sim.screen import ScreenGrid
+
+_KEYS = {"resolution", "gamma", "brightness", "black_level", "color_balance"}
 
 REC709 = (0.2126, 0.7152, 0.0722)  # luminance weights of the R, G, B primaries' linear light
 
@@ -103,3 +108,22 @@ def project(light: np.ndarray, h_cal: np.ndarray, h_actual: np.ndarray, grid: Sc
         return
     m = translation(-c0, -r0) @ grid.mm_to_grid @ h_actual
     out[r0:r1, c0:c1] += warp_linear(light, m, (c1 - c0, r1 - r0))
+
+
+def from_config(cfg: Any) -> dict[str, Projector]:
+    """Parse a scenario's ``projectors`` block: exactly two, named a and b."""
+    # Projectors are addressed by name everywhere (box_a, width_a_mm, "A only"), never by order.
+    if not isinstance(cfg, Mapping) or set(cfg) != {"a", "b"}:
+        raise ValueError(f"projectors: exactly two, named a and b; got {sorted(cfg) if isinstance(cfg, Mapping) else cfg}")
+    out = {}
+    for name in ("a", "b"):
+        p = dict(cfg[name])
+        check_keys(p, _KEYS, f"projectors.{name}")
+        if "resolution" not in p:
+            raise ValueError(f"projectors.{name}: resolution is required")
+        resolution = pair(p.pop("resolution"), f"projectors.{name}.resolution", int)
+        kwargs: dict[str, Any] = {k: num(v, f"projectors.{name}.{k}") for k, v in p.items() if k != "color_balance"}
+        if "color_balance" in p:
+            kwargs["color_balance"] = tuple(num(c, f"projectors.{name}.color_balance") for c in p["color_balance"])
+        out[name] = Projector(name=name, resolution=resolution, **kwargs)
+    return out

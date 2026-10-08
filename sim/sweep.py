@@ -2,8 +2,9 @@
 
 Fifteen scenarios share one lecture hall, so a scenario may start from a base file and change
 only what its question needs: ``extends: _lecture_hall.yaml`` deep-merges the scenario over the
-base (mappings merge key by key; lists and values replace). Bases may extend other bases. Files
-whose name starts with ``_`` are bases, not scenarios.
+base (mappings merge key by key; lists and values replace; ``key: null`` removes a key the base
+set, e.g. the whole-screen camera's ``margin`` when switching to the zoomed preset). Bases may
+extend other bases. Files whose name starts with ``_`` are bases, not scenarios.
 
 A ``sweep`` maps dotted keys to lists of values, e.g.
 
@@ -34,7 +35,9 @@ import yaml
 def deep_merge(base: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, Any]:
     out = copy.deepcopy(dict(base))
     for key, value in over.items():
-        if isinstance(value, Mapping) and isinstance(out.get(key), Mapping):
+        if value is None:
+            out.pop(key, None)
+        elif isinstance(value, Mapping) and isinstance(out.get(key), Mapping):
             out[key] = deep_merge(out[key], value)
         else:
             out[key] = copy.deepcopy(value)
@@ -88,6 +91,9 @@ def _label(value: Any) -> str:
         parts = [_label(v) for v in value.values() if not isinstance(v, (Mapping, list, tuple))]
         return "-".join(parts) or "custom"
     if isinstance(value, (list, tuple)):
+        if value and all(isinstance(v, Mapping) for v in value):  # e.g. a list of nuisances: their types
+            firsts = [_label(next(iter(v.values()))) for v in value]
+            return "+".join(dict.fromkeys(firsts))
         return "-".join(_label(v) for v in value)
     return str(value)
 

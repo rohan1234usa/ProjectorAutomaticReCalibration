@@ -64,6 +64,7 @@ class CalibrationSetup:
     resolution: Mapping[str, tuple[int, int]]  # (width, height) per projector
     content_rect_mm: tuple[float, float, float, float]  # (x0, y0, x1, y1)
     blend_shape: str = "cosine"
+    black_uplift: bool = False  # lift each projector's single-coverage black to the overlap's double black
 
     def __post_init__(self) -> None:
         if len(self.h_cal) != 2 or set(self.h_cal) != set(self.resolution):
@@ -130,6 +131,21 @@ class CalibrationSetup:
             b: np.where(both, 1.0 - ramp, inside[b].astype(np.float64)),
         }
 
+    def uplift_mask(self, name: str) -> np.ndarray:
+        """1 on projector `name`'s pixels that land outside its partner's box, else 0: (h, w) float32.
+
+        Black-level compensation. Two blacks add up in the overlap, so on dark content the overlap
+        is a brighter patch. Blending software can hide it by lifting each projector's own black
+        wherever its partner does not reach, by the partner's black level: then black is equally
+        dark everywhere. The lift is built at calibrated geometry like the blend, so after a drift
+        its edge no longer meets the partner's raster edge -- a new step the detector may see.
+        """
+        partner = self.names[1] if name == self.names[0] else self.names[0]
+        w, h = self.resolution[name]
+        u, v = np.meshgrid(np.arange(w, dtype=np.float64), np.arange(h, dtype=np.float64))
+        landing = apply_h(self.h_cal[name], np.stack([u, v], axis=-1))
+        return (~points_in_convex(self.box_mm(partner), landing)).astype(np.float32)
+
     def blend_weights(self, name: str) -> np.ndarray:
         """Blend weight of every pixel of projector `name`, (h, w) float32 (the blend map)."""
         w, h = self.resolution[name]
@@ -166,7 +182,8 @@ class CalibrationSetup:
                 for n in self.names
             },
             "content_rect_mm": [float(v) for v in self.content_rect_mm],
-            "blend": {"rule": "inner_edge_distance", "shape": self.blend_shape, "space": "linear", "black_uplift": False},
+            "blend": {"rule": "inner_edge_distance", "shape": self.blend_shape, "space": "linear",
+                      "black_uplift": bool(self.black_uplift)},
         }
 
     def framebuffer(self, name: str, content: np.ndarray) -> np.ndarray:

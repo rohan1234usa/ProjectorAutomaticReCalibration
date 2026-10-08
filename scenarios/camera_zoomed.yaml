@@ -1,0 +1,17 @@
+# Question: what is the smallest offset each signal detects when the camera sees only the overlap,
+# its control strips and the four markers at its ends, at 1.74 px/mm (twice the whole-screen
+# camera's)? The sensor is mounted in portrait. The shift_sweep steps, across.
+extends: _lecture_hall.yaml
+name: camera_zoomed
+seed: 141
+duration_s: 1200
+camera: {preset: zoomed, px_per_mm: 1.74, margin: null}
+content:
+  loop: true
+  items:
+    - {type: deck, densities: [low, medium, high], slides: 5, hold_s: 37, border_frac: 0.05}
+    - {type: photo, pictures: 3, hold_s: 20}
+perturbation:
+  b: {kind: shift, magnitude_px: 1, direction: across, schedule: {type: step, t0_s: 615}}
+sweep:
+  perturbation.b.magnitude_px: [0, 0.5, 1, 1.5, 2, 4]

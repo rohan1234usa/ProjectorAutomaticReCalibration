@@ -23,11 +23,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing
+import os
 import platform
 import subprocess
 import sys
 import time
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -72,32 +75,14 @@ def environment() -> dict[str, Any]:
     }
 
 
-def write_dataset(
-    scenario: Scenario,
-    out_dir: str | Path,
-    frames: str = "none",
-    every: int = 600,
-    progress: Callable[[int, int], None] | None = None,
-) -> dict[str, Any]:
-    """Write one variant. frames: none (truth only, no rendering), sample, or all.
-
-    ``sample`` renders and hashes every frame but stores a PNG only every `every` frames and at
-    each change of a projector's geometry (a perturbation's onset or step).
-    """
-    if frames not in FRAME_MODES:
-        raise ValueError(f"frames must be one of {FRAME_MODES}, got {frames!r}")
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    started = time.perf_counter()
+def _write_range(scenario: Scenario, out: Path, frames: str, every: int, lo: int, hi: int, path: Path,
+                 progress: Callable[[int, int], None] | None = None) -> tuple[float, int]:
+    """Metadata lines (and PNGs) for frames lo..hi-1 into `path`; returns (render seconds, PNGs written)."""
     source = FrameSource(scenario)
-    scenario_text = yaml.safe_dump(scenario.data, sort_keys=False, allow_unicode=True)
-    (out / "scenario.yaml").write_text(scenario_text)
-    (out / "setup.json").write_text(dumps(source.setup_dict(), indent=1) + "\n")
-    if frames != "none":
-        (out / "frames").mkdir(exist_ok=True)
-    render_s, written, previous = 0.0, 0, None
-    with open(out / "metadata.jsonl", "w") as fh:
-        for i in range(len(source)):
+    render_s, written = 0.0, 0
+    previous = source.state(lo - 1) if lo > 0 else None  # so a range starts its PNG choices like a full run
+    with open(path, "w") as fh:
+        for i in range(lo, hi):
             state = source.state(i)
             line = source.truth(i, state)
             line["frame_sha256"], line["png"] = None, None
@@ -114,20 +99,77 @@ def write_dataset(
             fh.write(dumps(line) + "\n")
             previous = state
             if progress:
-                progress(i + 1, len(source))
+                progress(i + 1, hi)
+    return render_s, written
+
+
+def _write_part(data: dict[str, Any], variant: str, out: str, frames: str, every: int, lo: int, hi: int,
+                part: str) -> tuple[float, int]:
+    """One worker's share of a variant's frames (runs in a separate process)."""
+    scenario = scenario_from_dict(data, variant=variant)
+    return _write_range(scenario, Path(out), frames, every, lo, hi, Path(part))
+
+
+def _init_worker(threads: int) -> None:
+    cv2.setNumThreads(threads)
+
+
+def write_dataset(
+    scenario: Scenario,
+    out_dir: str | Path,
+    frames: str = "none",
+    every: int = 600,
+    progress: Callable[[int, int], None] | None = None,
+    jobs: int = 1,
+) -> dict[str, Any]:
+    """Write one variant. frames: none (truth only, no rendering), sample, or all.
+
+    ``sample`` renders and hashes every frame but stores a PNG only every `every` frames and at
+    each change of a projector's geometry (a perturbation's onset or step). With `jobs` > 1 the
+    frames are split into that many contiguous ranges rendered in parallel processes; every frame
+    depends only on its index, so the files are the same as from one process.
+    """
+    if frames not in FRAME_MODES:
+        raise ValueError(f"frames must be one of {FRAME_MODES}, got {frames!r}")
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+    n = scenario.timing.n_frames
+    scenario_text = yaml.safe_dump(scenario.data, sort_keys=False, allow_unicode=True)
+    (out / "scenario.yaml").write_text(scenario_text)
+    (out / "setup.json").write_text(dumps(scenario.setup_dict(), indent=1) + "\n")
+    if frames != "none":
+        (out / "frames").mkdir(exist_ok=True)
+    jobs = max(1, min(jobs, n))
+    if jobs == 1:
+        render_s, written = _write_range(scenario, out, frames, every, 0, n, out / "metadata.jsonl", progress)
+    else:
+        bounds = [round(k * n / jobs) for k in range(jobs + 1)]
+        parts = [out / f"metadata.part{k}.jsonl" for k in range(jobs)]
+        threads = max(1, (os.cpu_count() or 1) // jobs)
+        context = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(jobs, mp_context=context, initializer=_init_worker, initargs=(threads,)) as pool:
+            futures = [pool.submit(_write_part, scenario.data, scenario.variant, str(out), frames, every,
+                                   bounds[k], bounds[k + 1], str(parts[k])) for k in range(jobs)]
+            results = [f.result() for f in futures]
+        with open(out / "metadata.jsonl", "w") as fh:
+            for part in parts:
+                fh.write(part.read_text())
+                part.unlink()
+        render_s, written = sum(r[0] for r in results), sum(r[1] for r in results)
     total_s = time.perf_counter() - started
     info = {
         "scenario": scenario.name,
         "variant": scenario.variant,
         "scenario_sha256": hashlib.sha256(scenario_text.encode()).hexdigest(),
-        "n_frames": len(source),
+        "n_frames": n,
         "frames": frames,
         "pngs": written,
         "environment": environment(),
     }
     (out / "dataset.json").write_text(dumps(info, indent=1) + "\n")
-    timing = {"total_s": round(total_s, 3), "render_s": round(render_s, 3),
-              "render_ms_per_frame": round(1000 * render_s / max(1, len(source)), 2) if frames != "none" else None}
+    timing = {"total_s": round(total_s, 3), "render_s": round(render_s, 3), "jobs": jobs,
+              "render_ms_per_frame": round(1000 * render_s / max(1, n), 2) if frames != "none" else None}
     (out / "timing.json").write_text(dumps(timing, indent=1) + "\n")
     return {"dir": str(out), **info, **timing}
 

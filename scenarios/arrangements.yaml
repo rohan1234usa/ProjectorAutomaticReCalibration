@@ -1,0 +1,18 @@
+# Question: does detection work the same in every arrangement the brief allows?
+# The shift_sweep step (B moved across its inner edges at 615 s) in side-by-side, stacked,
+# rotated, corner, different-size and large-overlap installations. The markers follow each overlap.
+extends: _lecture_hall.yaml
+name: arrangements
+seed: 91
+duration_s: 1200
+content:
+  loop: true
+  items:
+    - {type: deck, densities: [low, medium, high], slides: 5, hold_s: 37, border_frac: 0.05}
+    - {type: black, hold_s: 6}
+perturbation:
+  b: {kind: shift, magnitude_px: 1, direction: across, schedule: {type: step, t0_s: 615}}
+sweep:
+  arrangement: [{preset: side_by_side}, {preset: stacked}, {preset: rotated}, {preset: corner},
+                {preset: different_sizes}, {preset: large_overlap}]
+  perturbation.b.magnitude_px: [0, 0.5, 1, 2, 4]

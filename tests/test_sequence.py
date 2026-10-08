@@ -5,9 +5,16 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
-from sim.sequence import from_config
+from sim.pictures import ContentGeometry
+from sim.planar import rect_polygon
+from sim.sequence import from_config as _from_config
 
 SIZE = (320, 90)
+GEOMETRY = ContentGeometry(px_per_mm=1.0, overlap_px=rect_polygon(140.0, 0.0, 180.0, 90.0))
+
+
+def from_config(cfg, seed, size, duration):
+    return _from_config(cfg, seed, size, duration, GEOMETRY)
 DECK = {"loop": True, "items": [{"type": "deck", "densities": ["low", "medium", "high"], "slides": 3, "hold_s": 2},
                                 {"type": "black", "hold_s": 1}]}
 
@@ -64,7 +71,7 @@ def test_flat_colour_and_held_density():
     "cfg, message",
     [
         ({"items": [{"type": "black", "hold_s": 2}]}, "set loop: true"),
-        ({"items": [{"type": "video", "hold_s": 2}]}, "must be one of"),
+        ({"items": [{"type": "hologram", "hold_s": 2}]}, "must be one of"),
         ({"items": [{"type": "deck", "density": "low", "densities": ["high"], "hold_s": 2}]}, "not both"),
         ({"items": [{"type": "deck", "density": "huge", "hold_s": 2}]}, "must be one of"),
         ({"items": [{"type": "flat", "hold_s": 0}]}, "positive"),
