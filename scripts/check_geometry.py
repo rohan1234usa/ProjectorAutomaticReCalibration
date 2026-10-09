@@ -4,8 +4,10 @@
 If it borrowed the simulator's geometry (``sim/planar.py``, ``sim/truth.py``), a bug there would
 pass its own check. So the few pieces it needs are written again here, the plain way:
 homographies applied to points, the calibrated boxes, convex clipping for the overlap P, its
-centroid, the projector pixel pitch there, the pivots, and a brute-force maximum of the
-separation of A's and B's copies of the content over P.
+centroid, the projector pixel pitch there, the pivots, the direction a shift "across" means (the
+length-weighted normal of the moving projector's inner edges: the overlap's edges on its own
+outline only, off the content rect's, where calibration fades it out; pointing away from its
+partner), and a brute-force maximum of the separation of A's and B's copies of the content over P.
 
 It also rebuilds what each recorded homography should be: a perturbation is a screen-mm
 homography M applied after calibration, h_actual = M_n ... M_1 h_cal in the order listed, with
@@ -73,15 +75,41 @@ def _pitch(h: np.ndarray, at_mm: np.ndarray) -> float:
     return math.sqrt(abs(np.linalg.det(h) / w**3))
 
 
+def _on_outline(poly: np.ndarray, pt: np.ndarray, tol_mm: float = 1e-6) -> bool:
+    """True if pt lies on the polygon's outline (within float rounding)."""
+    for a, b in zip(poly, np.roll(poly, -1, axis=0), strict=True):
+        ab = b - a
+        t = min(1.0, max(0.0, float((pt - a) @ ab) / float(ab @ ab)))
+        if math.hypot(*(pt - a - t * ab)) < tol_mm:
+            return True
+    return False
+
+
 class Geometry:
     def __init__(self, setup: dict[str, Any]) -> None:
         self.h = {n: np.array(p["h_cal_px_to_mm"]) for n, p in setup["projectors"].items()}
         self.res = {n: p["resolution"] for n, p in setup["projectors"].items()}
         self.boxes = {n: _box(self.h[n], self.res[n]) for n in self.h}
         x0, y0, x1, y1 = setup["content_rect_mm"]
-        rect = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=float)
-        self.overlap = _clip(_clip(self.boxes["a"], self.boxes["b"]), rect)
+        self.rect = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=float)
+        self.overlap = _clip(_clip(self.boxes["a"], self.boxes["b"]), self.rect)
         self.pitch = max(_pitch(self.h[n], _centroid(self.overlap)) for n in self.h)
+
+    def across(self, name: str) -> np.ndarray | None:
+        """Unit vector across `name`'s inner edges, away from its partner; None if it has none."""
+        partner = "b" if name == "a" else "a"
+        total, length = np.zeros(2), 0.0
+        for p, q in zip(self.overlap, np.roll(self.overlap, -1, axis=0), strict=True):
+            mid = (p + q) / 2
+            if (_on_outline(self.boxes[name], mid) and not _on_outline(self.boxes[partner], mid)
+                    and not _on_outline(self.rect, mid)):
+                normal = np.array([q[1] - p[1], p[0] - q[0]])  # as long as the edge
+                if normal @ (mid - self.boxes[name].mean(axis=0)) < 0:
+                    normal = -normal  # outward from the box, into the partner
+                total += normal
+                length += math.hypot(*normal)
+        norm = math.hypot(*total)
+        return None if norm < 1e-6 * length or length == 0 else -total / norm
 
     def pivot(self, name: str, spec: Any) -> np.ndarray:
         if spec in (None, "centre"):

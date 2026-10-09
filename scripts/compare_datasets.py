@@ -37,7 +37,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from scripts.dataset_files import file_sha256, variants
+from scripts.dataset_files import diff_paths, file_sha256, variants
 
 
 def _first_differing_line(a: bytes, b: bytes) -> int | None:
@@ -54,17 +54,6 @@ def compare_file(a: Path, b: Path) -> str:
         return "missing in a" if not a.exists() else "missing in b"
     line = _first_differing_line(a.read_bytes(), b.read_bytes())
     return "same" if line is None else f"differs at line {line}"
-
-
-def diff_paths(x: Any, y: Any, prefix: str = "") -> list[str]:
-    """Dotted paths at which two parsed JSON values differ; lists are compared whole."""
-    if isinstance(x, dict) and isinstance(y, dict):
-        out = []
-        for key in sorted(set(x) | set(y)):
-            path = f"{prefix}.{key}" if prefix else key
-            out += [path] if key not in x or key not in y else diff_paths(x[key], y[key], path)
-        return out
-    return [] if x == y else [prefix or "<line>"]
 
 
 def _ignored(path: str, ignore: tuple[str, ...]) -> bool:

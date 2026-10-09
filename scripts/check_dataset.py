@@ -11,34 +11,27 @@ frame, the recorded ground truth must then match:
   multiplier  every schedule re-evaluated here; continuous ones (drift, ramp, bump_then_hold,
               oscillate) may differ from it by half a quantum, the step of m moving the offset 0.02 px
   h_actual    each projector's calibrated homography after its requested moves, in the order
-              listed: a shift by the recorded vector (of length |m| x size, across = away from the
-              partner, along = at right angles), a rotation by m x the requested angle or a scale
-              by 1 + m (s - 1) about the requested pivot, a keystone along the requested axis about
-              the pivot, with the recorded strength k of the requested sign and k / m the same in
-              every frame
+              listed: a shift by the recorded vector (|m| x size long, exactly across: the
+              inner-edge normal, away from the partner; along: at right angles; or as asked), a
+              rotation by m x the requested angle or a scale by 1 + m (s - 1) about the requested
+              pivot, a keystone along the requested axis with k of the requested sign and k / m
+              the same in every frame
   offset_mm   shifts: |sum of B's shift vectors - sum of A's|; rotation: 2 R sin(|theta| / 2),
               R = the overlap vertex farthest from the pivot; scale: |s - 1| R; keystone: the
               requested size at full strength. Every keystone and any mix of kinds is also
-              measured by brute force over a dense grid of the overlap, on the h_actual verified
-              above, so a keystone's recorded strength is held to the size asked for
+              measured by brute force over a dense grid of the overlap, on the verified h_actual
   offset_px   offset_mm / the pitch computed here
   h_rel       D_B D_A^-1 of the recorded h_actual, with D_p = h_actual,p h_cal,p^-1
   timeline    t_s, the nuisance state, the content shown, the camera and the visible markers
-              (``scripts/check_timeline.py``)
 
 within 1e-6 mm (brute force: 1e-3 mm, as a grid slightly underestimates the maximum; matrices:
 1e-9). setup.json must agree with the scenario on the source feed and the exposure. Stored PNGs
-are re-hashed, and ``--rerender K`` renders K spread frames and up to K stored ones again
-(``scripts/check_frames.py``). For a
-sweep directory, variants that differ only in their perturbation must have produced
-bit-identical frames before the earliest onset among them: they share their seed.
+are re-hashed, ``--rerender K`` renders K spread frames and up to K stored ones again, and the
+variants of a sweep that differ only in their perturbation must share every frame before the
+earliest onset among them (``scripts/check_frames.py``). A check that could not run (no frame
+hashes, fields a dataset predates) is listed under "skipped"; ``--strict`` fails on it.
 
-A check that could not run (no frame hashes, fields a dataset predates) is listed under
-"skipped" rather than passed silently; ``--strict`` makes any skip a failure.
-
-Usage:
-    python -m scripts.check_dataset out/shift_sweep [--rerender 10] [--strict]   (one dataset, or a sweep)
-
+Usage: python -m scripts.check_dataset out/shift_sweep [--rerender 10] [--strict]   (a dataset or a sweep)
 Prints one JSON line per dataset and exits non-zero if any check fails.
 """
 
@@ -48,6 +41,7 @@ import argparse
 import json
 import math
 import sys
+from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -66,6 +60,23 @@ QUANTUM_PX = 0.02
 CONTINUOUS = ("drift", "ramp", "bump_then_hold", "oscillate")
 
 
+@dataclass(frozen=True, eq=False)
+class Request:
+    """One perturbation as the scenario asks for it, with all that stays the same from frame to frame."""
+
+    name: str  # the projector it moves
+    kind: str
+    size: float | None  # the offset asked for, mm (None: sized by deg or factor)
+    full: float | None  # rotation angle (rad) or scale - 1 at full strength
+    unit: float  # the offset it alone causes at full strength, mm
+    pivot: np.ndarray  # rotation, scale, keystone
+    reach: float  # the overlap vertex farthest from the pivot, mm
+    vector: np.ndarray | None  # shift: the unit direction asked for (None: no inner edge); keystone: its axis
+    quantum: float  # the step of m a continuous schedule moves in; 0 for exact schedules
+    schedule: Any
+    direction: Any  # as written: across, along or [x, y]
+
+
 def _size_mm(spec: dict[str, Any], pitch: float) -> float | None:
     if "magnitude_px" in spec:
         return float(spec["magnitude_px"]) * pitch
@@ -74,92 +85,96 @@ def _size_mm(spec: dict[str, Any], pitch: float) -> float | None:
     return None
 
 
-def _full_strength(name: str, spec: dict[str, Any], geo: Geometry) -> tuple[float | None, float]:
-    """(rotation angle or scale - 1 at m = 1, else None; the offset it alone then causes, in mm)."""
-    size = _size_mm(spec, geo.pitch)
-    if spec["kind"] in ("shift", "keystone"):
-        return None, abs(size)
-    r = geo.reach(geo.pivot(name, spec.get("pivot")))
-    if spec["kind"] == "rotation":
-        full = (math.radians(float(spec["deg"])) if size is None
-                else math.copysign(2 * math.asin(min(1.0, abs(size) / (2 * r))), size))
-        return full, 2 * r * abs(math.sin(full / 2))
-    full = float(spec["factor"]) - 1.0 if size is None else size / r
-    return full, abs(full) * r
-
-
-def _axis(spec: dict[str, Any]) -> np.ndarray:
-    axis = spec.get("axis", "x")
-    if isinstance(axis, str):
-        return np.array([1.0, 0.0]) if axis == "x" else np.array([0.0, 1.0])
-    v = np.array(axis, dtype=float)
+def _unit_vector(v: Any) -> np.ndarray:
+    v = np.array(v, dtype=float)
     return v / math.hypot(*v)
 
 
-def _check_shift(line: dict[str, Any], name: str, spec: dict[str, Any], v: np.ndarray, m: float, geo: Geometry,
-                 problems: list[str]) -> None:
-    """A shift's recorded vector: |m| x the requested size, pointing the requested way."""
-    size = _size_mm(spec, geo.pitch)
-    if abs(np.hypot(*v) - abs(m * size)) > TOL_MM:
-        problems.append(f"frame {line['i']}: shift of {np.hypot(*v):.9f} mm, asked {abs(m * size):.9f} mm")
-    if size == 0:
+def requests(scenario: dict[str, Any], geo: Geometry) -> list[Request]:
+    """Every perturbation of the scenario, in the simulator's order, read with the checker's geometry."""
+    out = []
+    for name, spec in perturbation_specs(scenario):
+        kind, size = spec["kind"], _size_mm(spec, geo.pitch)
+        pivot = np.zeros(2) if kind == "shift" else geo.pivot(name, spec.get("pivot"))
+        reach, full, unit, vector = geo.reach(pivot), None, abs(size or 0.0), None
+        if kind == "rotation":
+            full = (math.radians(float(spec["deg"])) if size is None
+                    else math.copysign(2 * math.asin(min(1.0, abs(size) / (2 * reach))), size))
+            unit = 2 * reach * abs(math.sin(full / 2))
+        elif kind == "scale":
+            full = float(spec["factor"]) - 1.0 if size is None else size / reach
+            unit = abs(full) * reach
+        elif kind == "keystone":
+            axis = spec.get("axis", "x")
+            vector = _unit_vector({"x": [1, 0], "y": [0, 1]}[axis] if isinstance(axis, str) else axis)
+        else:
+            direction = spec.get("direction", "across")
+            if isinstance(direction, str):
+                a = geo.across(name)
+                vector = a if a is None or direction == "across" else np.array([-a[1], a[0]])
+            else:
+                vector = _unit_vector(direction)
+        schedule = spec.get("schedule")
+        continuous = isinstance(schedule, dict) and schedule.get("type") in CONTINUOUS
+        quantum = QUANTUM_PX * geo.pitch / unit if continuous and unit > 0 else 0.0
+        out.append(Request(name, kind, size, full, unit, pivot, reach, vector, quantum, schedule,
+                           spec.get("direction", "across")))
+    return out
+
+
+def _check_shift(line: dict[str, Any], req: Request, v: np.ndarray, m: float, problems: list[str]) -> None:
+    """A shift's recorded vector: |m| x the size asked for, pointing exactly the way asked for."""
+    if abs(np.hypot(*v) - abs(m * req.size)) > TOL_MM:
+        problems.append(f"frame {line['i']}: shift of {np.hypot(*v):.9f} mm, asked {abs(m * req.size):.9f} mm")
+    if req.size == 0:
         return  # a zero-size shift has no direction to check
-    partner = "a" if name == "b" else "b"
-    away = geo.boxes[name].mean(axis=0) - geo.boxes[partner].mean(axis=0)
-    cos = float(v @ away) / (np.hypot(*v) * np.hypot(*away)) * math.copysign(1.0, m * size)
-    direction = spec.get("direction", "across")
-    if (direction == "across" and cos < 0.9) or (direction == "along" and abs(cos) > 0.1):
-        problems.append(f"frame {line['i']}: shift {direction} points {cos:+.3f} along the centre-to-centre line")
-    if isinstance(direction, list):
-        given = np.array(direction, dtype=float) * math.copysign(1.0, m * size)
-        if float(v @ given) / (np.hypot(*v) * np.hypot(*given)) < 1 - 1e-9:
-            problems.append(f"frame {line['i']}: shift does not follow the requested vector {direction}")
+    if req.vector is None:
+        problems.append(f"frame {line['i']}: projector {req.name} has no inner edge to shift {req.direction}")
+        return
+    cos = float(v @ req.vector) / np.hypot(*v) * math.copysign(1.0, m * req.size)
+    if cos < 1 - 1e-9:
+        problems.append(f"frame {line['i']}: shift of {req.name} is not {req.direction} (cos {cos:.9f})")
 
 
-def _frame_expectation(line: dict[str, Any], t: Fraction, specs: list, geo: Geometry,
+def _frame_expectation(line: dict[str, Any], t: Fraction, reqs: list[Request],
                        problems: list[str]) -> tuple[float | None, bool]:
     """(expected offset in mm, or None if only brute force can tell; whether to measure it by brute force)."""
     entries = line["perturbation"]
-    if len(entries) != len(specs):
-        problems.append(f"frame {line['i']}: {len(entries)} perturbation tags for {len(specs)} specs")
+    if len(entries) != len(reqs):
+        problems.append(f"frame {line['i']}: {len(entries)} perturbation tags for {len(reqs)} specs")
         return None, False
     active = []
-    for (name, spec), entry in zip(specs, entries, strict=True):
-        m = expected_multiplier(spec.get("schedule"), t)
-        unit = _full_strength(name, spec, geo)[1]
-        kind = spec["schedule"].get("type") if isinstance(spec.get("schedule"), dict) else None
-        quantum = QUANTUM_PX * geo.pitch / unit if kind in CONTINUOUS and unit > 0 else 0.0
-        if abs(entry["applied"] - m) > quantum / 2 + 1e-12 or entry["projector"] != name or entry["kind"] != spec["kind"]:
-            problems.append(f"frame {line['i']}: {name} {spec['kind']} applied {entry['applied']}, expected {m}")
-        m = entry["applied"]  # within its quantum of the schedule: what the offset follows
-        if m != 0.0:
-            active.append((name, spec, entry, m))
+    for req, entry in zip(reqs, entries, strict=True):
+        m = expected_multiplier(req.schedule, t)
+        if abs(entry["applied"] - m) > req.quantum / 2 + 1e-12 or entry["projector"] != req.name \
+                or entry["kind"] != req.kind:
+            problems.append(f"frame {line['i']}: {req.name} {req.kind} applied {entry['applied']}, expected {m}")
+        if entry["applied"] != 0.0:  # within its quantum of the schedule: what the offset follows
+            active.append((req, entry, entry["applied"]))
     if not active:
         return 0.0, False
-    shifts = [(name, spec, entry, m) for name, spec, entry, m in active if spec["kind"] == "shift"]
-    for name, spec, entry, m in shifts:  # checked whatever else is active
-        _check_shift(line, name, spec, np.array(entry["vector_mm"]), m, geo, problems)
+    shifts = [(req, entry, m) for req, entry, m in active if req.kind == "shift"]
+    for req, entry, m in shifts:  # checked whatever else is active
+        _check_shift(line, req, np.array(entry["vector_mm"]), m, problems)
     if len(shifts) == len(active):
         total = {"a": np.zeros(2), "b": np.zeros(2)}
-        for name, _, entry, _ in shifts:
-            total[name] += np.array(entry["vector_mm"])
+        for req, entry, _ in shifts:
+            total[req.name] += np.array(entry["vector_mm"])
         return float(np.hypot(*(total["b"] - total["a"]))), False
     if len(active) == 1:
-        name, spec, entry, m = active[0]
-        pivot = geo.pivot(name, spec.get("pivot"))
-        if "pivot_mm" in entry and not np.allclose(entry["pivot_mm"], pivot, atol=1e-9):
-            problems.append(f"frame {line['i']}: pivot {entry['pivot_mm']} is not the requested {spec.get('pivot', 'centre')}")
-        full, unit = _full_strength(name, spec, geo)
-        if spec["kind"] == "rotation":
-            return 2 * geo.reach(pivot) * abs(math.sin(m * full / 2)), False
-        if spec["kind"] == "scale":
-            return abs(m * full) * geo.reach(pivot), False
+        req, entry, m = active[0]
+        if "pivot_mm" in entry and not np.allclose(entry["pivot_mm"], req.pivot, atol=1e-9):
+            problems.append(f"frame {line['i']}: pivot {entry['pivot_mm']} is not the requested one, {req.pivot.tolist()}")
+        if req.kind == "rotation":
+            return 2 * req.reach * abs(math.sin(m * req.full / 2)), False
+        if req.kind == "scale":
+            return abs(m * req.full) * req.reach, False
         if m == 1.0:
-            return unit, True  # a keystone at full strength: the requested size, confirmed by brute force
+            return req.unit, True  # a keystone at full strength: the requested size, confirmed by brute force
     return None, True
 
 
-def _check_homographies(line: dict[str, Any], specs: list, geo: Geometry, problems: list[str],
+def _check_homographies(line: dict[str, Any], reqs: list[Request], geo: Geometry, problems: list[str],
                         strengths: dict[int, float]) -> None:
     """h_actual from the request and the recorded multipliers; h_rel from h_actual.
 
@@ -168,24 +183,22 @@ def _check_homographies(line: dict[str, Any], specs: list, geo: Geometry, proble
     to the full-strength one whose size is checked against the request.
     """
     moves: dict[str, list[np.ndarray]] = {"a": [], "b": []}
-    for index, ((name, spec), entry) in enumerate(zip(specs, line["perturbation"], strict=False)):
+    for index, (req, entry) in enumerate(zip(reqs, line["perturbation"], strict=False)):
         m = entry["applied"]
         if m == 0.0:
             continue
-        if spec["kind"] == "shift":
-            moves[name].append(transform("shift", 1.0, np.array(entry["vector_mm"]), np.zeros(2)))
-            continue
-        pivot = geo.pivot(name, spec.get("pivot"))
-        if spec["kind"] == "keystone":
-            k, size = entry.get("k_per_mm", 0.0), _size_mm(spec, geo.pitch)
-            if size and k and math.copysign(1.0, k) != math.copysign(1.0, m * size):
-                problems.append(f"frame {line['i']}: keystone of {name} has k = {k}, of the wrong sign")
+        if req.kind == "shift":
+            moves[req.name].append(transform("shift", 1.0, np.array(entry["vector_mm"]), np.zeros(2)))
+        elif req.kind == "keystone":
+            k = entry.get("k_per_mm", 0.0)
+            if req.size and k and math.copysign(1.0, k) != math.copysign(1.0, m * req.size):
+                problems.append(f"frame {line['i']}: keystone of {req.name} has k = {k}, of the wrong sign")
             unit = strengths.setdefault(index, k / m)
             if abs(k / m - unit) > 1e-9 * abs(unit):
-                problems.append(f"frame {line['i']}: keystone of {name} has k / m = {k / m}, {unit} in other frames")
-            moves[name].append(transform("keystone", k, _axis(spec), pivot))
+                problems.append(f"frame {line['i']}: keystone of {req.name} has k / m = {k / m}, {unit} in other frames")
+            moves[req.name].append(transform("keystone", k, req.vector, req.pivot))
         else:
-            moves[name].append(transform(spec["kind"], m * _full_strength(name, spec, geo)[0], np.zeros(2), pivot))
+            moves[req.name].append(transform(req.kind, m * req.full, np.zeros(2), req.pivot))
     h_actual = {n: np.array(line["truth"]["h_actual"][n]) for n in ("a", "b")}
     for n in ("a", "b"):
         if not np.allclose(h_actual[n], compose(geo.h[n], moves[n]), rtol=1e-12, atol=1e-9):
@@ -214,7 +227,8 @@ def check(path: Path, k: int = 0) -> dict[str, Any]:
     if not lines:
         return {"dataset": str(path), "frames": 0, "skipped": [], "problems": ["metadata.jsonl: no frames"],
                 "n_problems": 1, "ok": False}
-    geo, timeline, specs = Geometry(setup), Timeline(scenario, setup, lines[0]), perturbation_specs(scenario)
+    geo, timeline = Geometry(setup), Timeline(scenario, setup, lines[0])
+    reqs = requests(scenario, geo)
     problems, skipped = _setup_problems(setup, scenario, timeline, len(lines)), set()
     worst, worst_px, worst_brute, n_closed, n_brute = 0.0, 0.0, 0.0, 0, 0
     brute_cache: dict[str, float] = {}
@@ -222,8 +236,8 @@ def check(path: Path, k: int = 0) -> dict[str, Any]:
     for n, line in enumerate(lines):
         if line["i"] != n:
             problems.append(f"line {n}: frame index {line['i']}")
-        expected, brute = _frame_expectation(line, timeline.phase + n * timeline.sample, specs, geo, problems)
-        _check_homographies(line, specs, geo, problems, strengths)
+        expected, brute = _frame_expectation(line, timeline.phase + n * timeline.sample, reqs, problems)
+        _check_homographies(line, reqs, geo, problems, strengths)
         timeline.check(line, problems, skipped)
         got = line["truth"]["offset_mm"]
         worst_px = max(worst_px, abs(line["truth"]["offset_px"] - got / geo.pitch))
@@ -249,10 +263,17 @@ def check(path: Path, k: int = 0) -> dict[str, Any]:
             "problems": problems[:5], "n_problems": len(problems), "ok": ok}
 
 
+def _non_negative(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 (off) or more, got {value}")
+    return value
+
+
 def main(argv: list[str] | None = None) -> bool:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("path", type=Path, help="a dataset directory, or a sweep directory with variants.json")
-    parser.add_argument("--rerender", type=int, default=0, metavar="K",
+    parser.add_argument("--rerender", type=_non_negative, default=0, metavar="K",
                         help="render K frames spread over each dataset, and up to K stored ones, again and compare")
     parser.add_argument("--strict", action="store_true", help="fail when a check had to be skipped")
     args = parser.parse_args(argv)

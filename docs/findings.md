@@ -821,9 +821,9 @@ checker re-derives the same content from the scenario text, lag included, on eve
    because irradiance is the light that lands; `screen_radiance` applies the gain, so the
    components still sum to one camera pass (tested with and without gain).
 2. **Room and bezel light keep gain 1**, and the bezel, paper and wall stay matte. A real gain
-   screen also rejects room light arriving off axis; issue #5 adds an `ambient_gain`.
+   screen also rejects room light arriving off axis; issue #5 proposes an `ambient_gain`.
 3. **A passer-by is lit by the gained projector light** (the occluder rescales the projector
-   components); a person is not the screen. Issue #3 fixes it with the shadows.
+   components); a person is not the screen. Issue #3 proposes fixing it with the shadows.
 4. **The demo test measures the gain net of room light**, to 0.1%, instead of the planned 2% on
    hotspot ratios, which room light dilutes (above).
 5. **`check_frames.py`** holds the PNG, re-render and pairing checks, apart from
@@ -868,6 +868,27 @@ with the strengthened checker:
   1.4e-14 mm, and their strength per unit m is constant;
 - the pairing check reports, rather than passes, the groups it cannot pair without frame hashes.
 
+**Code review on PR #19** (high effort, posted as inline comments) found seven things; six are
+fixed, each with a test where it concerns code:
+
+1. **The shift direction was checked against the line between the box centres**, not against
+   the inner-edge normal that defines `across`. They differ by 20.05° for projector B in the
+   `rotated` preset and by 22.38° in `corner`. So an `along` shift there would have been reported
+   as wrong (|cos| 0.34–0.38 against a 0.1 limit), and `across` passed only narrowly (0.92 against
+   0.9). The checker now derives the inner-edge normal with its own geometry
+   (`Geometry.across`) and holds every shift to its direction within 1e-9. The whole catalogue's
+   truth passes the exact check, the rotated and corner arrangements included.
+2. **A passer-by on a gain screen inherits the screen's gain.** This is left to issue #3: no
+   scenario combines the two yet.
+3. **`--rerender` accepted a negative K** and then rendered nothing; it is now refused.
+4. **The RGB gain branch of `screen_radiance` was untested.** The components-sum test now runs it.
+5. **Two recursive JSON differs** (the comparison's and the re-render's) are now one, in
+   `scripts/dataset_files.py`.
+6. **Each perturbation's fixed geometry was recomputed on every frame**: its pivot, reach,
+   angle or factor, and direction. It is now computed once per dataset (`Request`).
+7. **Open issues were described as done** in CLAUDE.md and in this entry; the wording now says
+   they propose the change.
+
 **Docs.**
 - CLAUDE.md §4.3 gave the zoomed echo floor as ≈ 1.4 mm. Its own formula gives 1.5 mm, because
   `MIN_OFFSET_MM` binds there: 2.5 camera px are 1.44 mm at 1.74 px/mm. `camera_zoomed.yaml`
@@ -875,7 +896,7 @@ with the strengthened checker:
 - §5 lists the disruptions still to build, with their issue numbers; §11 asks what screen the real
   installation has.
 
-**Tests:** 341 (319 default + 22 slow), and ruff is clean.
+**Tests:** 344 (322 default + 22 slow), and ruff is clean.
 
 ### Issues filed for the rest
 

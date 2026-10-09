@@ -25,7 +25,7 @@ from typing import Any
 
 import yaml
 
-from scripts.dataset_files import pixel_hash, read_lines, read_png
+from scripts.dataset_files import diff_paths, pixel_hash, present, read_lines, read_png
 
 
 def check_pngs(path: Path, lines: list[dict[str, Any]]) -> tuple[int, list[str]]:
@@ -43,20 +43,6 @@ def check_pngs(path: Path, lines: list[dict[str, Any]]) -> tuple[int, list[str]]
         if pixel_hash(frame) != line["frame_sha256"]:
             problems.append(f"frame {line['i']}: {line['png']} does not match the frame's recorded hash")
     return n, problems
-
-
-def _stored_mismatches(stored: Any, fresh: Any, prefix: str, out: list[str], added: set[str]) -> None:
-    """Fields of the stored line that the fresh one lacks or disagrees with; fields only the fresh one has go to `added`."""
-    if isinstance(stored, dict) and isinstance(fresh, dict):
-        for key in fresh.keys() - stored.keys():
-            added.add(f"{prefix}{key}")
-        for key, value in stored.items():
-            if key not in fresh:
-                out.append(f"{prefix}{key}")
-            else:
-                _stored_mismatches(value, fresh[key], f"{prefix}{key}.", out, added)
-    elif stored != fresh:
-        out.append(prefix.rstrip("."))
 
 
 def _spread(items: list[int], k: int) -> set[int]:
@@ -98,8 +84,9 @@ def rerender(path: Path, lines: list[dict[str, Any]], k: int) -> dict[str, Any]:
         if pixel_hash(source.frame(i, state)) != line["frame_sha256"]:
             problems.append(f"frame {i}: the re-rendered frame does not match the recorded hash")
         stored = {key: value for key, value in line.items() if key not in ("frame_sha256", "png")}
-        fields: list[str] = []
-        _stored_mismatches(stored, json.loads(json.dumps(source.truth(i, state))), "", fields, added)
+        differ = diff_paths(stored, json.loads(json.dumps(source.truth(i, state))))
+        added |= {path for path in differ if not present(stored, path)}  # written by newer code
+        fields = [path for path in differ if present(stored, path)]
         if fields:
             problems.append(f"frame {i}: re-rendered metadata differs in {fields}")
     return {"rerendered": len(chosen), "fields_added_since": sorted(added), "problems": problems}

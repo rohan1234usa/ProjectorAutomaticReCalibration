@@ -6,6 +6,7 @@ test here corrupts one recorded value the simulator wrote and expects the check 
 
 import copy
 import json
+import math
 import shutil
 
 import cv2
@@ -15,8 +16,9 @@ import yaml
 
 from scripts import check_dataset, make_dataset
 from scripts.check_frames import frames_to_render
+from scripts.check_geometry import Geometry
 from scripts.dataset_files import read_png
-from tests.scenes import TINY_BEZEL, tiny_shift_sweep
+from tests.scenes import TINY_BEZEL, TINY_SCENARIO, tiny_shift_sweep
 
 NUISANCES = [
     {"type": "lamp", "projector": "b", "gain": 0.85, "schedule": {"type": "ramp", "t0_s": 1, "duration_s": 2}},
@@ -239,3 +241,34 @@ def test_an_empty_dataset_fails_with_a_message(sample_sweep, tmp_path):
     (copied / "metadata.jsonl").write_text("")
     result = check_dataset.check(copied)
     assert not result["ok"] and result["problems"] == ["metadata.jsonl: no frames"]
+
+
+def test_a_shift_along_a_corner_overlap_is_held_to_the_inner_edge_normal(tmp_path):
+    """'Across' is the length-weighted normal of the moving projector's inner edges. In a corner overlap it
+    is over 20 degrees off the line between the box centres, which a centre-line check would misjudge."""
+    a = [[60, 20], [310, 20], [310, 160.625], [60, 160.625]]
+    b = [[250, 100], [500, 100], [500, 240.625], [250, 240.625]]
+    cfg = {**copy.deepcopy(TINY_SCENARIO), "name": "corner", "duration_s": 6, "trusted_window_s": 3,
+           "camera": {**TINY_SCENARIO["camera"], "phase_s": 0.09},
+           "arrangement": {"preset": "explicit", "corners_mm": {"a": a, "b": b}, "content_rect_mm": [60, 20, 500, 240.625]},
+           "content": {"loop": True, "items": [{"type": "deck", "slides": 2, "hold_s": 1.6, "border_frac": 0.1}]},
+           "perturbation": {"b": {"kind": "shift", "magnitude_px": 2, "direction": "along",
+                                  "schedule": {"type": "step", "t0_s": 3}}}}
+    out = _write(tmp_path, cfg)
+    geo = Geometry(json.loads((out / "setup.json").read_text()))
+    centre_line = geo.boxes["b"].mean(axis=0) - geo.boxes["a"].mean(axis=0)
+    assert math.degrees(math.acos(geo.across("b") @ centre_line / math.hypot(*centre_line))) > 20
+    assert check_dataset.check(out)["ok"]
+
+    def turn(line):  # the recorded shift turned by 1 degree, its length kept
+        x, y = line["perturbation"][0]["vector_mm"]
+        c, s = math.cos(math.radians(1)), math.sin(math.radians(1))
+        line["perturbation"][0]["vector_mm"] = [c * x - s * y, s * x + c * y]
+
+    _edit(out / "metadata.jsonl", 9, turn)
+    assert any(p.startswith("frame 9: shift of b is not along") for p in check_dataset.check(out)["problems"])
+
+
+def test_a_negative_rerender_count_is_refused(sample_sweep):
+    with pytest.raises(SystemExit):
+        check_dataset.main([str(sample_sweep), "--rerender", "-1"])
