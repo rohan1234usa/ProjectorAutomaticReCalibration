@@ -275,8 +275,9 @@ def main(argv: list[str] | None = None) -> dict:
         "render_s": round(t2 - t1, 3),
         "offset_mm": truth["truth"]["offset_mm"],
     }
-    if scene.room.active:
-        summary["hotspot_mm"] = {n: [round(float(v), 3) for v in scene.room.hotspot_mm(n)] for n in scene.setup.names}
+    if scene.room.active:  # a retro screen seen from the projector's own distance has no hotspot
+        spots = {n: scene.room.hotspot_mm(n) for n in scene.setup.names}
+        summary["hotspot_mm"] = {n: [round(float(v), 3) for v in s] for n, s in spots.items() if s is not None}
     levels = measure_levels(scene, electrons, regions, source.camera_for(state))
     white = white_electrons(scene)
     summary["levels"] = levels

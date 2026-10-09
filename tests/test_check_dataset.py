@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from scripts import check_dataset, make_dataset
+from scripts.check_frames import frames_to_render
 from scripts.dataset_files import read_png
 from tests.scenes import TINY_BEZEL, tiny_shift_sweep
 
@@ -114,7 +115,8 @@ def test_checker_covers_every_kind_and_continuous_schedules(tmp_path):
 
 def test_frames_are_rendered_again_and_must_match_their_hashes(sample_sweep, tmp_path):
     result = check_dataset.check(sample_sweep / "magnitude_px=4", 3)
-    assert result["ok"] and result["rerendered"] == 5 and result["pngs_checked"] == 4  # frames 0, 4, 6, 8, 11
+    # 3 spread frames (0, 6, 11) and 3 of the 4 stored ones (0, 6, 8): 4 frames in all
+    assert result["ok"] and result["rerendered"] == 4 and result["pngs_checked"] == 4
     assert check_dataset.main([str(sample_sweep), "--rerender", "2", "--strict"])
     wrong = tmp_path / "wrong_hash"
     shutil.copytree(sample_sweep / "magnitude_px=4", wrong)
@@ -193,3 +195,47 @@ def test_a_pairing_that_cannot_run_is_reported_and_strict_fails_it(sweep_file, t
     assert paired["paired_skipped_no_hashes"] == [["magnitude_px=0", "magnitude_px=1", "magnitude_px=4"]]
     assert not check_dataset.main([str(out), "--strict"])
     assert not check_dataset.main([str(out / "magnitude_px=1"), "--rerender", "2", "--strict"])  # nothing to render against
+
+
+def test_rerendering_takes_at_most_k_stored_frames():
+    """A dataset written with --frames all stores every frame; a spot check must stay a spot check."""
+    every = [{"i": i, "png": f"frames/{i:06d}.png"} for i in range(2400)]
+    assert len(frames_to_render(every, 10)) == 10  # the same ten spread frames, stored or not
+    sparse = [{"i": i, "png": f"frames/{i:06d}.png" if i in (0, 600, 1230) else None} for i in range(2400)]
+    assert set(frames_to_render(sparse, 3)) == {0, 1200, 2399} | {0, 600, 1230}  # no more stored than k: all
+
+
+def test_a_shift_is_held_to_its_size_beside_a_rotation(tmp_path):
+    """With two kinds at once the offset has no closed form, but the shift's own vector still has one."""
+    cfg = {**tiny_shift_sweep(), "name": "mixed"}
+    cfg.pop("sweep")
+    step = {"type": "step", "t0_s": 3}
+    cfg["perturbation"] = {"b": [{"kind": "shift", "magnitude_px": 1, "schedule": step},
+                                 {"kind": "rotation", "magnitude_px": 1, "pivot": "centre", "schedule": step}]}
+    out = _write(tmp_path, cfg)
+    result = check_dataset.check(out)
+    assert result["ok"] and result["brute_force_frames"] == 6  # frames 6-11, measured on the verified h_actual
+    _edit(out / "metadata.jsonl", 9, lambda line: line["perturbation"][0].update(
+        vector_mm=[1.1 * v for v in line["perturbation"][0]["vector_mm"]]))
+    assert any(p.startswith("frame 9: shift of") for p in check_dataset.check(out)["problems"])
+
+
+def test_a_partial_keystone_is_tied_to_the_full_strength_one(tmp_path):
+    """A ramped keystone's k is m x the strength that gives the requested size at m = 1, in every frame."""
+    cfg = {**tiny_shift_sweep(), "name": "keystone"}
+    cfg.pop("sweep")
+    cfg["perturbation"] = {"b": {"kind": "keystone", "magnitude_px": 2, "pivot": "centre",
+                                 "schedule": {"type": "ramp", "t0_s": 3, "duration_s": 2}}}
+    out = _write(tmp_path, cfg)
+    assert check_dataset.check(out)["ok"]
+    _edit(out / "metadata.jsonl", 8, lambda line: line["perturbation"][0].update(
+        k_per_mm=1.01 * line["perturbation"][0]["k_per_mm"]))
+    assert any("keystone of b has k / m" in p for p in check_dataset.check(out)["problems"])
+
+
+def test_an_empty_dataset_fails_with_a_message(sample_sweep, tmp_path):
+    copied = tmp_path / "empty"
+    shutil.copytree(sample_sweep / "magnitude_px=0", copied)
+    (copied / "metadata.jsonl").write_text("")
+    result = check_dataset.check(copied)
+    assert not result["ok"] and result["problems"] == ["metadata.jsonl: no frames"]

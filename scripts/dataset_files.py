@@ -24,9 +24,6 @@ from typing import Any
 import cv2
 import numpy as np
 
-FILES = ("scenario.yaml", "setup.json", "metadata.jsonl", "dataset.json")
-
-
 def read_lines(path: Path) -> list[dict[str, Any]]:
     """Every line of a dataset's metadata.jsonl, parsed."""
     with open(Path(path) / "metadata.jsonl") as fh:

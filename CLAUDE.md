@@ -201,7 +201,7 @@ scripts/
   check_dataset.py      # python -m scripts.check_dataset out/xxx [--rerender K] [--strict]: truth vs what the scenario asked [done]
   check_geometry.py     # the checker's own plane geometry and homographies, independent of sim/ [done]
   check_timeline.py     # the checker's own timeline: times, schedules, nuisances, content, markers [done]
-  check_frames.py       # stored PNGs and re-rendered frames vs recorded hashes (the one checker that runs sim/) [done]
+  check_frames.py       # stored, re-rendered and paired frames vs recorded hashes (the one checker that runs sim/) [done]
   dataset_files.py      # the checkers' own reading of dataset directories and frame hashes      [done]
   compare_datasets.py   # python -m scripts.compare_datasets A B: are two runs the same dataset, and where not [done]
   run_detector.py       # python -m scripts.run_detector out/xxx --config detector.yaml
@@ -316,7 +316,8 @@ methods, generalized from a band to any overlap.
   peaks to multiples of the camera pitch. Peaks are converted to mm with the camera
   homography's local Jacobian.
 - **Floor** = max(`MIN_OFFSET_MM`, `ECHO_FLOOR_CAMERA_PX` / local camera px per mm). That is
-  ≈ 2.9 mm for the whole-screen camera and ≈ 1.4 mm zoomed (planning estimates).
+  ≈ 2.9 mm for the whole-screen camera and 1.5 mm zoomed, where `MIN_OFFSET_MM` binds (2.5
+  camera px are 1.44 mm at 1.74 px/mm); planning estimates.
   - A peak below the floor is `unresolved`.
   - No peak returns `None` with `upper_bound = floor`. Never 0: that would veto a real
     1.7–3 mm offset.
@@ -500,7 +501,11 @@ does not depend on sampling). Everything below is built (Phases 1 and 2).
     is not a multiple of the modulation period (its phase changes from frame to frame);
   - in-camera sharpening left on by mistake;
   - black-level uplift outside the overlap, if the blending software compensates (part of
-    the blending setup, `blend.black_uplift`).
+    the blending setup, `blend.black_uplift`);
+  - still to build, each a GitHub issue (#3–#13): cast shadows, projector defocus, room-bounce
+    light, flicker and sharpening that start mid-run and a DLP colour-wheel waveform, dynamic
+    iris, uneven room light, camera creep and vibration, one-projector overlays and dropouts, a
+    presenter standing for minutes, room-light flicker, and reference-feed jitter.
 - **Ground truth per frame** (`truth.py`), written to `metadata.jsonl`:
   - true relative homography `h_rel = H_actB·H_calB⁻¹·H_calA·H_actA⁻¹`;
   - true `offset_mm`: how far apart A and B now put the same content, the largest
@@ -608,7 +613,7 @@ phase before the done conditions of the phases it depends on hold.
 | 1 Scaffold + simulator core | pyproject, packages, config dataclass; screen, projector, blending setup, content, camera, render chain; `scripts/visualize.py` | A human sees a seamless image with a faint black-level raster around it | — | **done 2026-10-06**: seam 3.2e-6, raster edge within 0.0001 mm, 0.43 s per frame, 68 tests |
 | 2a Simulator datasets | bezel + markers, mono camera, arrangement presets, slide decks and held/flat/black sequences, perturbations + schedules, truth, FrameSource + caches, `make_dataset`, `check_dataset` | `shift_sweep` and `aligned_slides` generate twice with identical metadata and frame hashes; every frame's `offset_mm` within 1e-6 mm of the injected value; markers found 8/8 at ambient 0.02 with centre error < 0.2 px | 1 | **done 2026-10-07**: `--jobs 1` and `--jobs 4` runs byte-identical (34,800 frames each); offset error ≤ 8e-14 mm; marker centres p95 0.092 px, max 0.125 px; 45 ms per unchanged frame; 203 tests (7 slow) |
 | 2b Simulator library | video, textures (photo, dark film, stripes, letterbox, blank overlap), nuisances + flicker, black-level uplift, zoomed camera preset, reference feed, the rest of the §7 catalogue | every §7 scenario loads and renders its event frames; `aligned_video`, `aligned_nuisances`, `camera_zoomed` and `boundary_hidden` generate twice identically; the zoomed camera finds the 4 overlap markers with centre error < 0.2 px; each nuisance has a physics test, with truth still aligned; a video straddle equals the linear-light mix; source timestamps lag the display by `lag_s` | 2a | **done 2026-10-07**, refined 2026-10-08: `--jobs 4` and `--jobs 5` runs byte-identical (52,800 frames each); zoomed marker centres max 0.089 px; lamp, room light and bump exact; flicker moves frame to frame; 280 tests (20 slow) |
-| 2c Screen gain + dataset verification | 3-D positions and per-projector screen gain (`sim/room.py`, `gain_screen`); `compare_datasets`; `check_dataset` request-derived geometry, timeline, PNG and re-render checks, with explicit skips; source feed on `shift_sweep` and `camera_zoomed`; GitHub issues for the deferred nuisances | at peak 1.8 and 2.4, the camera's brightness net of room light over the matte twin's equals the lobe's gain at each hotspot and 600 mm away within 0.1%; peak 1 is bit-identical to matte; every stored 2a/2b dataset passes `check_dataset --rerender` before and after the gain code; `gain_screen`, `shift_sweep` and `camera_zoomed` generate twice identically by `compare_datasets`; `check_dataset` catches a swapped transform, a wrong nuisance state and a stale PNG; the feed changes only the frames exposed within 0.1 s after a slide change, and no PNG | 2b | **done 2026-10-09**: gain within 1.0e-4 of the lobe at both peaks; 766 stored frames (32 variants) re-render to their hashes before and after; the three sweeps generated twice (`--jobs 4` vs 5) are identical, 64,800 frames; the feed changed exactly the predicted 37 frames per variant (481 + 296) and no PNG; issues #3–#18; 336 tests (22 slow) |
+| 2c Screen gain + dataset verification | 3-D positions and per-projector screen gain (`sim/room.py`, `gain_screen`); `compare_datasets`; `check_dataset` request-derived geometry, timeline, PNG and re-render checks, with explicit skips; source feed on `shift_sweep` and `camera_zoomed`; GitHub issues for the deferred nuisances | at peak 1.8 and 2.4, the camera's brightness net of room light over the matte twin's equals the lobe's gain at each hotspot and 600 mm away within 0.1%; peak 1 is bit-identical to matte; every stored 2a/2b dataset passes `check_dataset --rerender` before and after the gain code; `gain_screen`, `shift_sweep` and `camera_zoomed` generate twice identically by `compare_datasets`; `check_dataset` catches a swapped transform, a wrong nuisance state and a stale PNG; the feed changes only the frames exposed within 0.1 s after a slide change, and no PNG | 2b | **done 2026-10-09**: gain within 1.0e-4 of the lobe at both peaks; 766 stored frames (32 variants) re-render to their hashes before and after; the three sweeps generated twice (`--jobs 4` vs 5) are identical, 64,800 frames; the feed changed exactly the predicted 37 frames per variant (481 + 296) and no PNG; issues #3–#18; the strengthened checker passes the whole catalogue's truth (107 variants, 277,201 frames); 341 tests (22 slow) |
 | 3 Detector inputs + geometry | `inputs.py`, `rectify.py`, `polygon.py`, `blending.py`, `geometry.py`, `classify.py`, `results.py` | 200 random convex quad pairs (rotated, corner, nested): overlap, core tiles, controls and pieces valid; blend weights equal the simulator's within 1e-6; rectification error ≤ 0.05 mm; camera bump re-solved within 0.1 mm | 2a | |
 | 4 Boundary (primary) | `edges.py`, `field.py`, `boundary.py`; minimal `eval/feed.py`, `eval/metrics.py`, `scripts/run_detector.py` | On `shift_sweep` and `rotation_sweep`: offset within 0.2 mm of truth whenever available (spec: 0.5 px); `None`, not a wrong number, when edges are hidden; availability ≥ 95% on `aligned_slides` and `aligned_video` | 2a, 3 (`aligned_video`: 2b) | |
 | 5 Runner + decision | `baseline.py`, `pools.py`, `decision.py`, `runner.py`, JSONL output | `aligned_*` including nuisances: zero YES over ≥ 100 intervals; 4 px → YES within `YES_VOTES` intervals; 2 px → YES; 1 px → NO | 4 | |
@@ -655,7 +660,7 @@ Phase 3 needs only 2a, so 2b and 3 can run in parallel, and so can 6a/6b alongsi
     matching aligned twin;
   - a measurement that cannot see must be tested to return `None`, not 0.
 - **Logging:** structured JSONL per interval. Never print tensors.
-- **Commits:** one per phase (Phase 2: one per milestone, 2a and 2b), with a message that
+- **Commits:** one per phase (Phase 2: one per milestone, 2a, 2b and 2c), with a message that
   states which "done" condition was met and the numbers that show it.
 
 ---
@@ -735,3 +740,6 @@ meanwhile):
 - Is black-level compensation enabled outside the overlap?
 - Does the recalibrate button emit a signal the script can read?
 - Can printed markers go on the screen bezel, and is there enough room light to see them?
+- What screen is it: matte, or a gain screen (peak gain, lobe width), and where do the
+  projectors and the camera stand? On a gain screen each projector has its own hotspot;
+  `gain_screen` sweeps the gain meanwhile.

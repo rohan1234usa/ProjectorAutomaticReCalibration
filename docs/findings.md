@@ -729,7 +729,8 @@ Phase 7 needs on `shift_sweep`; the remaining real-life disruptions are GitHub i
   diffed field by field ("37 frames differ, first frame 74, in content.segments, frame_sha256");
   `--ignore-fields` handles datasets written before a field existed.
 - **`check_dataset`**, split into `check_geometry.py`, `check_timeline.py` and `check_frames.py`
-  so each file stays under 300 lines and only re-rendering imports `sim/`:
+  (stored, re-rendered and paired frames) so each file stays under 300 lines and only
+  re-rendering imports `sim/`:
   - every frame's `h_actual` is rebuilt from the request and the recorded multipliers (shifts by
     their recorded vector, rotations and scales by m × the requested size about the requested
     pivot, keystones along the requested axis with the recorded strength of the requested sign),
@@ -741,7 +742,7 @@ Phase 7 needs on `shift_sweep`; the remaining real-life disruptions are GitHub i
     state (room light, lamps, knocks quantized to 1%, passers-by, flicker, sharpening), the
     pictures shown with their shares, tags and cuts (lag included), the knocked camera, and the
     visible markers (all of those in view when nobody passes, a subset when someone does);
-  - stored PNGs re-hashed; `--rerender K` renders K spread frames and every PNG frame again;
+  - stored PNGs re-hashed; `--rerender K` renders K spread frames and up to K stored ones again;
   - a check that cannot run (no hashes, fields a dataset predates) is reported under `skipped`
     or `paired_skipped_no_hashes` instead of passing silently; `--strict` fails on it.
 - **Catalogue:** `scenarios/gain_screen.yaml` (6 variants: peak 1, 1.8, 2.4 × shift 0, 2 px);
@@ -825,9 +826,9 @@ checker re-derives the same content from the scenario text, lag included, on eve
    components); a person is not the screen. Issue #3 fixes it with the shadows.
 4. **The demo test measures the gain net of room light**, to 0.1%, instead of the planned 2% on
    hotspot ratios, which room light dilutes (above).
-5. **`check_frames.py`** holds the PNG and re-render checks, apart from `check_dataset.py`, so
-   that file stays under 300 lines and the one import of `sim/` is isolated (a test holds the
-   checker scripts free of `sim/` at module level).
+5. **`check_frames.py`** holds the PNG, re-render and pairing checks, apart from
+   `check_dataset.py`, so that file stays under 300 lines and the one import of `sim/` is
+   isolated (a test holds the checker scripts free of `sim/` at module level).
 6. **The checker now uses each frame's exact time**, phase_s + i × sample_every_s, rather than the
    recorded float `t_s` read back as a decimal; `t_s` itself is checked against it.
 7. **A knocked camera is checked** against the frame-0 camera turned and shifted by each bump's
@@ -835,6 +836,46 @@ checker re-derives the same content from the scenario text, lag included, on eve
    records.
 8. **The mistake tests for the new keys** live in `tests/test_room.py`, beside the model, rather
    than in `tests/test_scenario.py`.
+
+### Review pass before merging
+
+A second read of everything 2c changed found four gaps in the checker and two small crashes. All
+are fixed, each with a test:
+
+1. **A shift beside another kind went unchecked.** A shift's recorded vector was held to its size
+   and direction only when every active perturbation was a shift. Beside a rotation, only the
+   brute-force offset ran, and it confirms that the recorded offset and `h_actual` agree, not
+   that the shift is the size asked for. Every active shift is now checked, whatever else is active.
+2. **A partial keystone was only self-consistent.** A ramped keystone's strength k was checked
+   against `h_actual` and its brute-force offset, both written from the same k. Now k / m must
+   be the same in every frame, which ties each partial frame to the full-strength one, whose size
+   is checked against the request.
+3. **`--rerender K` re-rendered everything on a `--frames all` dataset**, since every frame has a
+   PNG. It now renders up to K of the stored frames, evenly spread. A `--frames sample` dataset
+   stores 5 or 6 PNGs per variant, so with K = 10 or 20, as in every run above, the frames chosen
+   are the same as before.
+4. **An empty `metadata.jsonl` crashed the checker**; it now fails with a message.
+5. **The visualizer crashed on a retro-reflective screen seen from a projector's own distance**,
+   where that projector has no hotspot; it now leaves the hotspot out.
+6. **Clean-ups:** an unused constant is gone, and the pairing check moved beside the other
+   frame-hash checks.
+
+**The whole catalogue, truth only.** Every scenario was written with `--frames none` and checked
+with the strengthened checker:
+- 107 variants and 277,201 frames all pass, with nothing skipped;
+- the worst closed-form offset error is 9.9e-13 mm;
+- the 4,680 keystone frames of `scale_keystone`, measured by brute force, agree within
+  1.4e-14 mm, and their strength per unit m is constant;
+- the pairing check reports, rather than passes, the groups it cannot pair without frame hashes.
+
+**Docs.**
+- CLAUDE.md §4.3 gave the zoomed echo floor as ≈ 1.4 mm. Its own formula gives 1.5 mm, because
+  `MIN_OFFSET_MM` binds there: 2.5 camera px are 1.44 mm at 1.74 px/mm. `camera_zoomed.yaml`
+  already said 1.5 mm; §4.3 now does too.
+- §5 lists the disruptions still to build, with their issue numbers; §11 asks what screen the real
+  installation has.
+
+**Tests:** 341 (319 default + 22 slow), and ruff is clean.
 
 ### Issues filed for the rest
 

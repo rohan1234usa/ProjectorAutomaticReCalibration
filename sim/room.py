@@ -35,7 +35,10 @@ The gain multiplies light where it is reflected: each projector's light meets it
 grid pixel times the screen's reflectance (``reflectance_toward_camera``), so the bezel, marker
 paper and wall stay matte and a pixel on the screen's edge gains only for its screen part.
 
-Simplifications. Room light and the bezel's own light arrive from every direction, so they keep
+Simplifications. The lobe never falls below 1, while a real high-gain screen, which redistributes
+light rather than adding it, looks darker than matte far off its axis; across one camera's view
+the angles stay within a few lobe widths, so the shading's shape, which is what the detector sees,
+is the lobe's. Room light and the bezel's own light arrive from every direction, so they keep
 gain 1 (a real gain screen also rejects some room light arriving off axis). A knocked camera keeps
 its position: a knock moves the image by pixels and the angles by hundredths of a degree.
 """

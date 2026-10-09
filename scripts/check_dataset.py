@@ -14,7 +14,8 @@ frame, the recorded ground truth must then match:
               listed: a shift by the recorded vector (of length |m| x size, across = away from the
               partner, along = at right angles), a rotation by m x the requested angle or a scale
               by 1 + m (s - 1) about the requested pivot, a keystone along the requested axis about
-              the pivot, with the recorded strength k of the requested sign
+              the pivot, with the recorded strength k of the requested sign and k / m the same in
+              every frame
   offset_mm   shifts: |sum of B's shift vectors - sum of A's|; rotation: 2 R sin(|theta| / 2),
               R = the overlap vertex farthest from the pivot; scale: |s - 1| R; keystone: the
               requested size at full strength. Every keystone and any mix of kinds is also
@@ -27,7 +28,8 @@ frame, the recorded ground truth must then match:
 
 within 1e-6 mm (brute force: 1e-3 mm, as a grid slightly underestimates the maximum; matrices:
 1e-9). setup.json must agree with the scenario on the source feed and the exposure. Stored PNGs
-are re-hashed, and ``--rerender K`` renders K frames again (``scripts/check_frames.py``). For a
+are re-hashed, and ``--rerender K`` renders K spread frames and up to K stored ones again
+(``scripts/check_frames.py``). For a
 sweep directory, variants that differ only in their perturbation must have produced
 bit-identical frames before the earliest onset among them: they share their seed.
 
@@ -53,7 +55,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from scripts.check_frames import check_pngs, rerender
+from scripts.check_frames import check_paired, check_pngs, rerender
 from scripts.check_geometry import Geometry, brute_force_mm, compose, relative_homography, transform
 from scripts.check_timeline import Timeline, expected_multiplier, perturbation_specs
 from scripts.dataset_files import read_lines, variants
@@ -94,6 +96,26 @@ def _axis(spec: dict[str, Any]) -> np.ndarray:
     return v / math.hypot(*v)
 
 
+def _check_shift(line: dict[str, Any], name: str, spec: dict[str, Any], v: np.ndarray, m: float, geo: Geometry,
+                 problems: list[str]) -> None:
+    """A shift's recorded vector: |m| x the requested size, pointing the requested way."""
+    size = _size_mm(spec, geo.pitch)
+    if abs(np.hypot(*v) - abs(m * size)) > TOL_MM:
+        problems.append(f"frame {line['i']}: shift of {np.hypot(*v):.9f} mm, asked {abs(m * size):.9f} mm")
+    if size == 0:
+        return  # a zero-size shift has no direction to check
+    partner = "a" if name == "b" else "b"
+    away = geo.boxes[name].mean(axis=0) - geo.boxes[partner].mean(axis=0)
+    cos = float(v @ away) / (np.hypot(*v) * np.hypot(*away)) * math.copysign(1.0, m * size)
+    direction = spec.get("direction", "across")
+    if (direction == "across" and cos < 0.9) or (direction == "along" and abs(cos) > 0.1):
+        problems.append(f"frame {line['i']}: shift {direction} points {cos:+.3f} along the centre-to-centre line")
+    if isinstance(direction, list):
+        given = np.array(direction, dtype=float) * math.copysign(1.0, m * size)
+        if float(v @ given) / (np.hypot(*v) * np.hypot(*given)) < 1 - 1e-9:
+            problems.append(f"frame {line['i']}: shift does not follow the requested vector {direction}")
+
+
 def _frame_expectation(line: dict[str, Any], t: Fraction, specs: list, geo: Geometry,
                        problems: list[str]) -> tuple[float | None, bool]:
     """(expected offset in mm, or None if only brute force can tell; whether to measure it by brute force)."""
@@ -114,26 +136,13 @@ def _frame_expectation(line: dict[str, Any], t: Fraction, specs: list, geo: Geom
             active.append((name, spec, entry, m))
     if not active:
         return 0.0, False
-    if all(spec["kind"] == "shift" for _, spec, _, _ in active):
+    shifts = [(name, spec, entry, m) for name, spec, entry, m in active if spec["kind"] == "shift"]
+    for name, spec, entry, m in shifts:  # checked whatever else is active
+        _check_shift(line, name, spec, np.array(entry["vector_mm"]), m, geo, problems)
+    if len(shifts) == len(active):
         total = {"a": np.zeros(2), "b": np.zeros(2)}
-        for name, spec, entry, m in active:
-            v = np.array(entry["vector_mm"])
-            size = _size_mm(spec, geo.pitch)
-            if abs(np.hypot(*v) - abs(m * size)) > TOL_MM:
-                problems.append(f"frame {line['i']}: shift of {np.hypot(*v):.9f} mm, asked {abs(m * size):.9f} mm")
-            total[name] += v
-            if size == 0:
-                continue  # a zero-size shift has no direction to check
-            partner = "a" if name == "b" else "b"
-            away = geo.boxes[name].mean(axis=0) - geo.boxes[partner].mean(axis=0)
-            cos = float(v @ away) / (np.hypot(*v) * np.hypot(*away)) * math.copysign(1.0, m * size)
-            direction = spec.get("direction", "across")
-            if (direction == "across" and cos < 0.9) or (direction == "along" and abs(cos) > 0.1):
-                problems.append(f"frame {line['i']}: shift {direction} points {cos:+.3f} along the centre-to-centre line")
-            if isinstance(direction, list):
-                given = np.array(direction, dtype=float) * math.copysign(1.0, m * size)
-                if float(v @ given) / (np.hypot(*v) * np.hypot(*given)) < 1 - 1e-9:
-                    problems.append(f"frame {line['i']}: shift does not follow the requested vector {direction}")
+        for name, _, entry, _ in shifts:
+            total[name] += np.array(entry["vector_mm"])
         return float(np.hypot(*(total["b"] - total["a"]))), False
     if len(active) == 1:
         name, spec, entry, m = active[0]
@@ -150,10 +159,16 @@ def _frame_expectation(line: dict[str, Any], t: Fraction, specs: list, geo: Geom
     return None, True
 
 
-def _check_homographies(line: dict[str, Any], specs: list, geo: Geometry, problems: list[str]) -> None:
-    """h_actual from the request and the recorded multipliers; h_rel from h_actual."""
+def _check_homographies(line: dict[str, Any], specs: list, geo: Geometry, problems: list[str],
+                        strengths: dict[int, float]) -> None:
+    """h_actual from the request and the recorded multipliers; h_rel from h_actual.
+
+    A keystone's recorded strength k is m x one fixed value, the one that gives the requested size
+    at m = 1 (`strengths` keeps it per perturbation across frames), so every partial frame is tied
+    to the full-strength one whose size is checked against the request.
+    """
     moves: dict[str, list[np.ndarray]] = {"a": [], "b": []}
-    for (name, spec), entry in zip(specs, line["perturbation"], strict=False):
+    for index, ((name, spec), entry) in enumerate(zip(specs, line["perturbation"], strict=False)):
         m = entry["applied"]
         if m == 0.0:
             continue
@@ -165,6 +180,9 @@ def _check_homographies(line: dict[str, Any], specs: list, geo: Geometry, proble
             k, size = entry.get("k_per_mm", 0.0), _size_mm(spec, geo.pitch)
             if size and k and math.copysign(1.0, k) != math.copysign(1.0, m * size):
                 problems.append(f"frame {line['i']}: keystone of {name} has k = {k}, of the wrong sign")
+            unit = strengths.setdefault(index, k / m)
+            if abs(k / m - unit) > 1e-9 * abs(unit):
+                problems.append(f"frame {line['i']}: keystone of {name} has k / m = {k / m}, {unit} in other frames")
             moves[name].append(transform("keystone", k, _axis(spec), pivot))
         else:
             moves[name].append(transform(spec["kind"], m * _full_strength(name, spec, geo)[0], np.zeros(2), pivot))
@@ -193,15 +211,19 @@ def check(path: Path, k: int = 0) -> dict[str, Any]:
     setup = json.loads((path / "setup.json").read_text())
     scenario = yaml.safe_load((path / "scenario.yaml").read_text())
     lines = read_lines(path)
+    if not lines:
+        return {"dataset": str(path), "frames": 0, "skipped": [], "problems": ["metadata.jsonl: no frames"],
+                "n_problems": 1, "ok": False}
     geo, timeline, specs = Geometry(setup), Timeline(scenario, setup, lines[0]), perturbation_specs(scenario)
     problems, skipped = _setup_problems(setup, scenario, timeline, len(lines)), set()
     worst, worst_px, worst_brute, n_closed, n_brute = 0.0, 0.0, 0.0, 0, 0
     brute_cache: dict[str, float] = {}
+    strengths: dict[int, float] = {}
     for n, line in enumerate(lines):
         if line["i"] != n:
             problems.append(f"line {n}: frame index {line['i']}")
         expected, brute = _frame_expectation(line, timeline.phase + n * timeline.sample, specs, geo, problems)
-        _check_homographies(line, specs, geo, problems)
+        _check_homographies(line, specs, geo, problems, strengths)
         timeline.check(line, problems, skipped)
         got = line["truth"]["offset_mm"]
         worst_px = max(worst_px, abs(line["truth"]["offset_px"] - got / geo.pitch))
@@ -227,51 +249,22 @@ def check(path: Path, k: int = 0) -> dict[str, Any]:
             "problems": problems[:5], "n_problems": len(problems), "ok": ok}
 
 
-def check_paired(root: Path, names: list[str]) -> dict[str, Any]:
-    """Variants differing only in their perturbation must share every frame before the first onset."""
-    groups: dict[str, list[str]] = {}
-    for v in names:
-        scenario = yaml.safe_load((root / v / "scenario.yaml").read_text())
-        rest = {key: value for key, value in scenario.items() if key != "perturbation"}
-        groups.setdefault(json.dumps(rest, sort_keys=True, default=str), []).append(v)
-    checked, same, singletons, unhashed = 0, True, [], []
-    for members in groups.values():
-        if len(members) < 2:
-            singletons += members
-            continue
-        hashes, onsets = {}, []
-        for v in members:
-            lines = read_lines(root / v)
-            hashes[v] = [line["frame_sha256"] for line in lines]
-            moved = [line["i"] for line in lines if any(e["applied"] != 0.0 for e in line["perturbation"])]
-            if moved:
-                onsets.append(moved[0])
-        if any(h is None for hs in hashes.values() for h in hs):
-            unhashed.append(members)
-            continue
-        first = min(onsets) if onsets else min(len(h) for h in hashes.values())
-        reference = hashes[members[0]][:first]
-        same &= all(hashes[v][:first] == reference for v in members)
-        checked += first * len(members)
-    return {"paired_groups": len(groups), "paired_singletons": singletons, "paired_skipped_no_hashes": unhashed,
-            "paired_frames_checked": checked, "paired_identical": same, "ok": same}
-
-
 def main(argv: list[str] | None = None) -> bool:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("path", type=Path, help="a dataset directory, or a sweep directory with variants.json")
     parser.add_argument("--rerender", type=int, default=0, metavar="K",
-                        help="render K frames spread over each dataset, and every stored one, again and compare")
+                        help="render K frames spread over each dataset, and up to K stored ones, again and compare")
     parser.add_argument("--strict", action="store_true", help="fail when a check had to be skipped")
     args = parser.parse_args(argv)
     names = variants(args.path)
+    present = None if names is None else [v for v in names if (args.path / v).exists()]
     ok = True
-    for path in [args.path] if names is None else [args.path / v for v in names if (args.path / v).exists()]:
+    for path in [args.path] if present is None else [args.path / v for v in present]:
         result = check(path, args.rerender)
         ok &= result["ok"] and not (args.strict and result["skipped"])
         print(json.dumps(result))
-    if names is not None:
-        paired = check_paired(args.path, [v for v in names if (args.path / v).exists()])
+    if present is not None:
+        paired = check_paired(args.path, present)
         ok &= paired["ok"] and not (args.strict and paired["paired_skipped_no_hashes"])
         print(json.dumps(paired))
     print(json.dumps({"ok": ok}))
