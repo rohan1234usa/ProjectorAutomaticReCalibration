@@ -1,28 +1,41 @@
 """Check a generated dataset against what the scenario asked for, independently of the simulator's truth code.
 
 What was asked for comes from the dataset's scenario.yaml: each perturbation's kind, size
-(``magnitude_px``/``magnitude_mm``/``deg``/``factor``), direction, pivot and schedule. The
-geometry comes from setup.json: the calibrated boxes, the overlap P (box A ∩ box B ∩ content
-rect), and the coarser projector's pixel pitch at P's centroid. All of it is recomputed with the
-checker's own geometry code (``scripts/check_geometry.py``), independent of ``sim/``. Per frame, the recorded ground truth must then match:
+(``magnitude_px``/``magnitude_mm``/``deg``/``factor``), direction or axis, pivot and schedule;
+the nuisances; the content; the camera's timing. The geometry comes from setup.json: the
+calibrated boxes, the overlap P (box A ∩ box B ∩ content rect), and the coarser projector's
+pixel pitch at P's centroid. All of it is recomputed with the checker's own code
+(``scripts/check_geometry.py``, ``scripts/check_timeline.py``), independent of ``sim/``. Per
+frame, the recorded ground truth must then match:
 
   multiplier  every schedule re-evaluated here; continuous ones (drift, ramp, bump_then_hold,
               oscillate) may differ from it by half a quantum, the step of m moving the offset 0.02 px
-  shift       offset = |sum of B's shift vectors - sum of A's|, each of length
-              |m| x size (mm), across = pointing away from the partner, along = at right
-              angles to it; the moved projector's h_actual = T(shift) h_cal, the other's unchanged
-  rotation    offset = 2 R sin(|theta| / 2), R = the overlap vertex farthest from the pivot
-  scale       offset = |s - 1| R
-  keystone    offset = the requested size at full strength; otherwise, and for any mix of
-              kinds, a brute-force maximum over a dense grid of the overlap
+  h_actual    each projector's calibrated homography after its requested moves, in the order
+              listed: a shift by the recorded vector (of length |m| x size, across = away from the
+              partner, along = at right angles), a rotation by m x the requested angle or a scale
+              by 1 + m (s - 1) about the requested pivot, a keystone along the requested axis about
+              the pivot, with the recorded strength k of the requested sign
+  offset_mm   shifts: |sum of B's shift vectors - sum of A's|; rotation: 2 R sin(|theta| / 2),
+              R = the overlap vertex farthest from the pivot; scale: |s - 1| R; keystone: the
+              requested size at full strength. Every keystone and any mix of kinds is also
+              measured by brute force over a dense grid of the overlap, on the h_actual verified
+              above, so a keystone's recorded strength is held to the size asked for
   offset_px   offset_mm / the pitch computed here
+  h_rel       D_B D_A^-1 of the recorded h_actual, with D_p = h_actual,p h_cal,p^-1
+  timeline    t_s, the nuisance state, the content shown, the camera and the visible markers
+              (``scripts/check_timeline.py``)
 
-within 1e-6 mm (brute force: 1e-3 mm, as a grid slightly underestimates the maximum). For a
+within 1e-6 mm (brute force: 1e-3 mm, as a grid slightly underestimates the maximum; matrices:
+1e-9). setup.json must agree with the scenario on the source feed and the exposure. Stored PNGs
+are re-hashed, and ``--rerender K`` renders K frames again (``scripts/check_frames.py``). For a
 sweep directory, variants that differ only in their perturbation must have produced
 bit-identical frames before the earliest onset among them: they share their seed.
 
+A check that could not run (no frame hashes, fields a dataset predates) is listed under
+"skipped" rather than passed silently; ``--strict`` makes any skip a failure.
+
 Usage:
-    python -m scripts.check_dataset out/shift_sweep   (one dataset, or a sweep directory)
+    python -m scripts.check_dataset out/shift_sweep [--rerender 10] [--strict]   (one dataset, or a sweep)
 
 Prints one JSON line per dataset and exits non-zero if any check fails.
 """
@@ -30,7 +43,6 @@ Prints one JSON line per dataset and exits non-zero if any check fails.
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import math
 import sys
@@ -41,23 +53,15 @@ from typing import Any
 import numpy as np
 import yaml
 
-from scripts.check_geometry import Geometry, brute_force_mm
+from scripts.check_frames import check_pngs, rerender
+from scripts.check_geometry import Geometry, brute_force_mm, compose, relative_homography, transform
+from scripts.check_timeline import Timeline, expected_multiplier, perturbation_specs
+from scripts.dataset_files import read_lines, variants
 
 TOL_MM = 1e-6
 BRUTE_TOL_MM = 1e-3
 QUANTUM_PX = 0.02
 CONTINUOUS = ("drift", "ramp", "bump_then_hold", "oscillate")
-
-
-def _specs(scenario: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-    out = []
-    perturbation = scenario.get("perturbation")
-    if isinstance(perturbation, dict):
-        for name in ("a", "b"):  # the simulator's order: projectors by name, then list order
-            items = perturbation.get(name)
-            if items is not None:
-                out += [(name, s) for s in ([items] if isinstance(items, dict) else items)]
-    return out
 
 
 def _size_mm(spec: dict[str, Any], pitch: float) -> float | None:
@@ -66,30 +70,6 @@ def _size_mm(spec: dict[str, Any], pitch: float) -> float | None:
     if "magnitude_mm" in spec:
         return float(spec["magnitude_mm"])
     return None
-
-
-def _exact(value: Any) -> Fraction:
-    return Fraction(str(value))  # YAML's decimal text, as written
-
-
-def expected_multiplier(schedule: Any, t: Fraction) -> float:
-    """The schedule's multiplier m(t), before any quantization (see sim/schedule.py's table)."""
-    if schedule in (None, "none") or schedule.get("type") == "none" or t < _exact(schedule.get("t0_s", 0)):
-        return 0.0
-    kind, dt = schedule["type"], t - _exact(schedule.get("t0_s", 0))
-    if kind == "step":
-        return 1.0
-    if kind == "staircase":
-        levels = schedule["levels"]
-        return float(levels[min(int(dt // _exact(schedule["hold_s"])), len(levels) - 1)])
-    if kind == "drift":
-        return float(_exact(schedule["rate_per_h"]) * dt / 3600)
-    if kind == "ramp":
-        return float(min(Fraction(1), dt / _exact(schedule["duration_s"])))
-    if kind == "bump_then_hold":
-        peak, hold, tau = (float(_exact(schedule.get(k, 1))) for k in ("peak", "hold", "settle_s"))
-        return hold + (peak - hold) * (math.exp(-float(dt) / tau) if tau > 0 else 0.0)
-    return 0.5 * (1 - math.cos(2 * math.pi * float(dt / _exact(schedule["period_s"]))))  # oscillate
 
 
 def _full_strength(name: str, spec: dict[str, Any], geo: Geometry) -> tuple[float | None, float]:
@@ -106,13 +86,21 @@ def _full_strength(name: str, spec: dict[str, Any], geo: Geometry) -> tuple[floa
     return full, abs(full) * r
 
 
-def _frame_expectation(line: dict[str, Any], specs: list, geo: Geometry, problems: list[str]) -> tuple[float | None, bool]:
-    """(expected offset in mm, or None if only brute force can tell; whether brute force is needed)."""
+def _axis(spec: dict[str, Any]) -> np.ndarray:
+    axis = spec.get("axis", "x")
+    if isinstance(axis, str):
+        return np.array([1.0, 0.0]) if axis == "x" else np.array([0.0, 1.0])
+    v = np.array(axis, dtype=float)
+    return v / math.hypot(*v)
+
+
+def _frame_expectation(line: dict[str, Any], t: Fraction, specs: list, geo: Geometry,
+                       problems: list[str]) -> tuple[float | None, bool]:
+    """(expected offset in mm, or None if only brute force can tell; whether to measure it by brute force)."""
     entries = line["perturbation"]
     if len(entries) != len(specs):
         problems.append(f"frame {line['i']}: {len(entries)} perturbation tags for {len(specs)} specs")
         return None, False
-    t = Fraction(repr(line["t_s"]))
     active = []
     for (name, spec), entry in zip(specs, entries, strict=True):
         m = expected_multiplier(spec.get("schedule"), t)
@@ -146,11 +134,6 @@ def _frame_expectation(line: dict[str, Any], specs: list, geo: Geometry, problem
                 given = np.array(direction, dtype=float) * math.copysign(1.0, m * size)
                 if float(v @ given) / (np.hypot(*v) * np.hypot(*given)) < 1 - 1e-9:
                     problems.append(f"frame {line['i']}: shift does not follow the requested vector {direction}")
-        for name in ("a", "b"):
-            h_act = np.array(line["truth"]["h_actual"][name])
-            want = geo.h[name] if not total[name].any() else np.array([[1, 0, total[name][0]], [0, 1, total[name][1]], [0, 0, 1.0]]) @ geo.h[name]
-            if not np.allclose(h_act, want, rtol=1e-12, atol=1e-9):
-                problems.append(f"frame {line['i']}: h_actual of {name} is not its shift of h_cal")
         return float(np.hypot(*(total["b"] - total["a"]))), False
     if len(active) == 1:
         name, spec, entry, m = active[0]
@@ -162,79 +145,135 @@ def _frame_expectation(line: dict[str, Any], specs: list, geo: Geometry, problem
             return 2 * geo.reach(pivot) * abs(math.sin(m * full / 2)), False
         if spec["kind"] == "scale":
             return abs(m * full) * geo.reach(pivot), False
-        if spec["kind"] == "keystone" and m == 1.0:
-            return unit, False
+        if m == 1.0:
+            return unit, True  # a keystone at full strength: the requested size, confirmed by brute force
     return None, True
 
 
-def check(path: Path) -> dict[str, Any]:
+def _check_homographies(line: dict[str, Any], specs: list, geo: Geometry, problems: list[str]) -> None:
+    """h_actual from the request and the recorded multipliers; h_rel from h_actual."""
+    moves: dict[str, list[np.ndarray]] = {"a": [], "b": []}
+    for (name, spec), entry in zip(specs, line["perturbation"], strict=False):
+        m = entry["applied"]
+        if m == 0.0:
+            continue
+        if spec["kind"] == "shift":
+            moves[name].append(transform("shift", 1.0, np.array(entry["vector_mm"]), np.zeros(2)))
+            continue
+        pivot = geo.pivot(name, spec.get("pivot"))
+        if spec["kind"] == "keystone":
+            k, size = entry.get("k_per_mm", 0.0), _size_mm(spec, geo.pitch)
+            if size and k and math.copysign(1.0, k) != math.copysign(1.0, m * size):
+                problems.append(f"frame {line['i']}: keystone of {name} has k = {k}, of the wrong sign")
+            moves[name].append(transform("keystone", k, _axis(spec), pivot))
+        else:
+            moves[name].append(transform(spec["kind"], m * _full_strength(name, spec, geo)[0], np.zeros(2), pivot))
+    h_actual = {n: np.array(line["truth"]["h_actual"][n]) for n in ("a", "b")}
+    for n in ("a", "b"):
+        if not np.allclose(h_actual[n], compose(geo.h[n], moves[n]), rtol=1e-12, atol=1e-9):
+            problems.append(f"frame {line['i']}: h_actual of {n} is not its requested moves applied to h_cal")
+    rel, got = relative_homography(h_actual, geo.h), np.array(line["truth"]["h_rel"])
+    if np.abs(got - rel).max() > 1e-9 * max(1.0, np.abs(rel).max()):
+        problems.append(f"frame {line['i']}: h_rel is not D_B D_A^-1 of the recorded h_actual")
+
+
+def _setup_problems(setup: dict[str, Any], scenario: dict[str, Any], timeline: Timeline, n: int) -> list[str]:
+    out = []
+    available = bool((scenario.get("reference") or {}).get("available", False))
+    if (setup.get("reference") or {}).get("available") != available:
+        out.append(f"setup.json: reference.available is not {available}, as the scenario says")
+    if setup["camera"].get("exposure_s") != float(timeline.exposure):
+        out.append(f"setup.json: camera.exposure_s is not {float(timeline.exposure)}, as the scenario says")
+    if n != timeline.n_frames:
+        out.append(f"metadata.jsonl: {n} frames, the scenario makes {timeline.n_frames}")
+    return out
+
+
+def check(path: Path, k: int = 0) -> dict[str, Any]:
     setup = json.loads((path / "setup.json").read_text())
     scenario = yaml.safe_load((path / "scenario.yaml").read_text())
-    lines = [json.loads(s) for s in (path / "metadata.jsonl").read_text().splitlines()]
-    geo = Geometry(setup)
-    specs = _specs(scenario)
-    problems: list[str] = []
+    lines = read_lines(path)
+    geo, timeline, specs = Geometry(setup), Timeline(scenario, setup, lines[0]), perturbation_specs(scenario)
+    problems, skipped = _setup_problems(setup, scenario, timeline, len(lines)), set()
     worst, worst_px, worst_brute, n_closed, n_brute = 0.0, 0.0, 0.0, 0, 0
-    for line in lines:
-        expected, brute = _frame_expectation(line, specs, geo, problems)
+    brute_cache: dict[str, float] = {}
+    for n, line in enumerate(lines):
+        if line["i"] != n:
+            problems.append(f"line {n}: frame index {line['i']}")
+        expected, brute = _frame_expectation(line, timeline.phase + n * timeline.sample, specs, geo, problems)
+        _check_homographies(line, specs, geo, problems)
+        timeline.check(line, problems, skipped)
         got = line["truth"]["offset_mm"]
         worst_px = max(worst_px, abs(line["truth"]["offset_px"] - got / geo.pitch))
-        if brute:
-            worst_brute = max(worst_brute, abs(got - brute_force_mm(line, geo)))
-            n_brute += 1
-        elif expected is not None:
+        if expected is not None:
             worst = max(worst, abs(got - expected))
             n_closed += 1
+        if brute:
+            key = json.dumps(line["truth"]["h_actual"])
+            if key not in brute_cache:
+                brute_cache[key] = brute_force_mm(line, geo)
+            worst_brute = max(worst_brute, abs(got - brute_cache[key]))
+            n_brute += 1
+    pngs, png_problems = check_pngs(path, lines)
+    problems += png_problems
+    rendered = rerender(path, lines, k) if k else {}
+    problems += rendered.pop("problems", [])
+    if "rerender_skipped" in rendered:
+        skipped.add("rerender: " + rendered["rerender_skipped"])
     ok = (worst <= TOL_MM and worst_px <= TOL_MM / geo.pitch and worst_brute <= BRUTE_TOL_MM and not problems)
     return {"dataset": str(path), "frames": len(lines), "pitch_mm": geo.pitch, "closed_form_frames": n_closed,
             "max_offset_error_mm": worst, "max_offset_px_error": worst_px, "brute_force_frames": n_brute,
-            "max_brute_force_error_mm": worst_brute, "problems": problems[:5], "n_problems": len(problems), "ok": ok}
+            "max_brute_force_error_mm": worst_brute, "pngs_checked": pngs, **rendered, "skipped": sorted(skipped),
+            "problems": problems[:5], "n_problems": len(problems), "ok": ok}
 
 
-def check_paired(root: Path, variants: list[str]) -> dict[str, Any]:
+def check_paired(root: Path, names: list[str]) -> dict[str, Any]:
     """Variants differing only in their perturbation must share every frame before the first onset."""
     groups: dict[str, list[str]] = {}
-    for v in variants:
+    for v in names:
         scenario = yaml.safe_load((root / v / "scenario.yaml").read_text())
-        rest = {k: val for k, val in copy.deepcopy(scenario).items() if k != "perturbation"}
+        rest = {key: value for key, value in scenario.items() if key != "perturbation"}
         groups.setdefault(json.dumps(rest, sort_keys=True, default=str), []).append(v)
-    checked, same = 0, True
+    checked, same, singletons, unhashed = 0, True, [], []
     for members in groups.values():
+        if len(members) < 2:
+            singletons += members
+            continue
         hashes, onsets = {}, []
         for v in members:
-            lines = [json.loads(s) for s in (root / v / "metadata.jsonl").read_text().splitlines()]
+            lines = read_lines(root / v)
             hashes[v] = [line["frame_sha256"] for line in lines]
             moved = [line["i"] for line in lines if any(e["applied"] != 0.0 for e in line["perturbation"])]
             if moved:
                 onsets.append(moved[0])
-        if len(members) < 2 or any(h is None for hs in hashes.values() for h in hs):
+        if any(h is None for hs in hashes.values() for h in hs):
+            unhashed.append(members)
             continue
         first = min(onsets) if onsets else min(len(h) for h in hashes.values())
         reference = hashes[members[0]][:first]
         same &= all(hashes[v][:first] == reference for v in members)
         checked += first * len(members)
-    return {"paired_groups": len(groups), "paired_frames_checked": checked, "paired_identical": same, "ok": same}
+    return {"paired_groups": len(groups), "paired_singletons": singletons, "paired_skipped_no_hashes": unhashed,
+            "paired_frames_checked": checked, "paired_identical": same, "ok": same}
 
 
 def main(argv: list[str] | None = None) -> bool:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("path", type=Path, help="a dataset directory, or a sweep directory with variants.json")
+    parser.add_argument("--rerender", type=int, default=0, metavar="K",
+                        help="render K frames spread over each dataset, and every stored one, again and compare")
+    parser.add_argument("--strict", action="store_true", help="fail when a check had to be skipped")
     args = parser.parse_args(argv)
-    index = args.path / "variants.json"
+    names = variants(args.path)
     ok = True
-    if index.exists():
-        variants = [v["dir"] for v in json.loads(index.read_text())["variants"] if (args.path / v["dir"]).exists()]
-        for v in variants:
-            result = check(args.path / v)
-            ok &= result["ok"]
-            print(json.dumps(result))
-        paired = check_paired(args.path, variants)
-        ok &= paired["ok"]
-        print(json.dumps(paired))
-    else:
-        result = check(args.path)
-        ok &= result["ok"]
+    for path in [args.path] if names is None else [args.path / v for v in names if (args.path / v).exists()]:
+        result = check(path, args.rerender)
+        ok &= result["ok"] and not (args.strict and result["skipped"])
         print(json.dumps(result))
+    if names is not None:
+        paired = check_paired(args.path, [v for v in names if (args.path / v).exists()])
+        ok &= paired["ok"] and not (args.strict and paired["paired_skipped_no_hashes"])
+        print(json.dumps(paired))
     print(json.dumps({"ok": ok}))
     return ok
 

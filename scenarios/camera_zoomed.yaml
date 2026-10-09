@@ -3,6 +3,7 @@
 # camera's)? The sensor is mounted in portrait. Paired with shift_sweep's across variants (same
 # seed, content and onset), so zoomed and whole-screen results compare shift for shift. 1.5 px
 # (1.56 mm) is added just above the zoomed echo floor, max(MIN_OFFSET_MM, 2.5 px / 1.74) = 1.5 mm.
+# Like shift_sweep, it has the source feed (shown 0.1 s after it is sent), so the pair stays matched.
 extends: _lecture_hall.yaml
 name: camera_zoomed
 seed: 21
@@ -13,6 +14,7 @@ content:
   items:
     - {type: deck, densities: [low, medium, high], slides: 5, hold_s: 37, border_frac: 0.05}
     - {type: black, hold_s: 6}
+reference: {available: true, lag_s: 0.1}
 perturbation:
   b: {kind: shift, magnitude_px: 1, direction: across, schedule: {type: step, t0_s: 615}}
 sweep:

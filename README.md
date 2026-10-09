@@ -23,10 +23,13 @@ arrangements, on a screen framed by a bezel with printed fiducial markers, throu
 - plays slides, photos, stripes and synthetic video;
 - moves the projectors by known amounts (shift, rotation, scale, keystone, on any schedule);
 - adds nuisances that must never cause a YES (camera knocks, lamp dimming, room light, people
-  walking past, flicker, sharpening, black-level compensation);
+  walking past, flicker, sharpening, black-level compensation, a gain screen's hotspots);
 - records ground truth for every frame.
 
-`make_dataset` turns any of the 16 scenario files into a reproducible dataset.
+`make_dataset` turns any of the 17 scenario files into a reproducible dataset. Two checkers
+verify datasets with their own code, apart from the simulator: `check_dataset` holds every
+frame's truth to what its scenario asked for, and `compare_datasets` proves two runs identical.
+The disruptions that are still to be simulated are tracked as GitHub issues.
 
 Next is Phase 3, where the detector itself starts: its inputs and geometry (CLAUDE.md §8).
 
@@ -61,7 +64,14 @@ uv run python -m scripts.make_dataset scenarios/shift_sweep.yaml out/shift_sweep
 ```
 
 ```bash
-uv run python -m scripts.check_dataset out/shift_sweep
+uv run python -m scripts.check_dataset out/shift_sweep --rerender 10
+```
+
+`--rerender 10` also renders ten frames of each variant again and compares them with the
+recorded hashes. To prove that a second run made the same dataset:
+
+```bash
+uv run python -m scripts.compare_datasets out/shift_sweep out/shift_sweep_again
 ```
 
 `--frames none` writes the ground truth alone in seconds. Any frame can be re-rendered from a

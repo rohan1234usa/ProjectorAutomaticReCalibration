@@ -265,7 +265,8 @@ class Camera:
 
 
 _SETTINGS = {"psf_sigma_px", "well_fill_at_white", "full_well_e", "read_noise_e", "pedestal_dn", "vignetting", "gamma"}
-_KEYS = _SETTINGS | {"preset", "resolution", "margin", "keystone", "px_per_mm", "color", "exposure_s", "phase_s"}
+_KEYS = _SETTINGS | {"preset", "resolution", "margin", "keystone", "px_per_mm", "color", "exposure_s", "phase_s",
+                     "position_mm"}
 
 
 def from_config(cfg: Mapping[str, Any], screen_size_mm: tuple[float, float], overlap_mm: np.ndarray
@@ -280,6 +281,7 @@ def from_config(cfg: Mapping[str, Any], screen_size_mm: tuple[float, float], ove
     exposure = seconds(cfg.pop("exposure_s", "1/30"), "camera.exposure_s")
     phase = seconds(cfg.pop("phase_s", 0), "camera.phase_s")
     color = choice(cfg.pop("color", "mono"), COLORS, "camera.color")
+    cfg.pop("position_mm", None)  # read by sim/room.py: only the screen gain's angles depend on it
     if preset == "whole_screen" and "px_per_mm" in cfg:
         raise ValueError("camera: px_per_mm belongs to the zoomed preset (whole_screen uses margin)")
     if preset == "zoomed" and "margin" in cfg:

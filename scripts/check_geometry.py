@@ -6,6 +6,14 @@ pass its own check. So the few pieces it needs are written again here, the plain
 homographies applied to points, the calibrated boxes, convex clipping for the overlap P, its
 centroid, the projector pixel pitch there, the pivots, and a brute-force maximum of the
 separation of A's and B's copies of the content over P.
+
+It also rebuilds what each recorded homography should be: a perturbation is a screen-mm
+homography M applied after calibration, h_actual = M_n ... M_1 h_cal in the order listed, with
+M a translation, or a rotation, uniform scale or keystone about a pivot (the conventions of the
+scenario format: a positive angle turns +x toward +y, a keystone k along unit axis v has the
+bottom row [k v, 1]); the relative homography h_rel = D_B D_A^-1 with D_p = h_actual,p h_cal,p^-1;
+a knocked camera's homography, the unmoved one turned and shifted in the image; and which
+markers' paper lies wholly inside the frame.
 """
 
 from __future__ import annotations
@@ -102,3 +110,68 @@ def brute_force_mm(line: dict[str, Any], geo: Geometry) -> float:
     edge_pts = [p + np.linspace(0, 1, 2001)[:, None] * (q - p) for p, q in zip(poly, np.roll(poly, -1, axis=0), strict=True)]
     pts = np.vstack([pts[inside], poly, *edge_pts])
     return float(np.hypot(*(_apply(d["b"], pts) - _apply(d["a"], pts)).T).max())
+
+
+def translation(dx: float, dy: float) -> np.ndarray:
+    return np.array([[1.0, 0.0, dx], [0.0, 1.0, dy], [0.0, 0.0, 1.0]])
+
+
+def transform(kind: str, value: float, vector: np.ndarray, pivot: np.ndarray) -> np.ndarray:
+    """One perturbation as a screen-mm homography: shift by value x vector, or the rest about pivot."""
+    if kind == "shift":
+        return translation(*(value * np.asarray(vector, dtype=float)))
+    if kind == "rotation":
+        c, s = math.cos(value), math.sin(value)
+        local = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+    elif kind == "scale":
+        local = np.diag([1.0 + value, 1.0 + value, 1.0])
+    else:  # keystone
+        local = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [value * vector[0], value * vector[1], 1.0]])
+    return translation(*pivot) @ local @ translation(-pivot[0], -pivot[1])
+
+
+def compose(h_cal: np.ndarray, moves: list[np.ndarray]) -> np.ndarray:
+    """h_cal after the moves, the first listed applied first."""
+    out = h_cal
+    for move in moves:
+        out = move @ out
+    return out
+
+
+def relative_homography(h_actual: dict[str, np.ndarray], h_cal: dict[str, np.ndarray]) -> np.ndarray:
+    """B's displacement relative to A's, D_B D_A^-1, normalised so that h[2, 2] = 1."""
+    d = {n: np.eye(3) if np.array_equal(h_actual[n], h_cal[n]) else h_actual[n] @ np.linalg.inv(h_cal[n])
+         for n in ("a", "b")}
+    h = d["b"] @ np.linalg.inv(d["a"])
+    return h / h[2, 2]
+
+
+def knocked(h_mm_to_px: np.ndarray, resolution: list[int], shift_px: list[float], rotation_deg: float,
+            m: float) -> np.ndarray:
+    """The camera homography after a knock of strength m: the image turned about its centre, then shifted."""
+    w, h = resolution
+    cx, cy = (w - 1) / 2, (h - 1) / 2
+    t = math.radians(m * rotation_deg)
+    turn = np.array([[math.cos(t), -math.sin(t), 0.0], [math.sin(t), math.cos(t), 0.0], [0.0, 0.0, 1.0]])
+    image = translation(m * shift_px[0], m * shift_px[1]) @ translation(cx, cy) @ turn @ translation(-cx, -cy)
+    return image @ h_mm_to_px
+
+
+def markers_in_view(setup: dict[str, Any], h_mm_to_px: np.ndarray, margin_px: float = 2.0) -> list[int]:
+    """Ids of the markers whose whole printed paper lies inside the frame, margin_px from its edges."""
+    markers = setup.get("markers")
+    if not markers:
+        return []
+    w, h = setup["camera"]["resolution"]
+    size = markers["size_mm"]
+    half = (size + 2 * markers["quiet_zone_cells"] * size / 6) / 2  # 6 cells across the black square
+    out = []
+    for item in markers["items"]:
+        x, y = item["centre_mm"]
+        paper = _apply(h_mm_to_px, np.array([[x - half, y - half], [x + half, y - half],
+                                             [x + half, y + half], [x - half, y + half]]))
+        lo, hi = paper.min(axis=0), paper.max(axis=0)
+        if lo[0] >= margin_px - 0.5 and lo[1] >= margin_px - 0.5 and hi[0] <= w - 0.5 - margin_px \
+                and hi[1] <= h - 0.5 - margin_px:
+            out.append(item["id"])
+    return out

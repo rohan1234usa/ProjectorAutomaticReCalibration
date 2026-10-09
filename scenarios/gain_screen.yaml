@@ -1,0 +1,28 @@
+# Question: on a gain screen each projector has its own hotspot, and the overlap lies between them,
+# in the tails of both lobes: can that fixed shading ever pass for misalignment (a "brightness
+# hotspot" in the overlap, or a shifted black-level edge), and does a 2 px shift still show under it?
+# A specular screen of peak gain 1.8 or 2.4 (peak 1 is the matte twin), lobe 20 degrees. Each
+# projector stands 3.2 m in front of its image's centre and the camera 6 m away, below the screen,
+# so A's hotspot falls at (1481, 1141) mm and B's at (2519, 1141) mm, each in its own single
+# coverage. Slides and 6 s of black alternate with 20 s of flat gray, which shows the shading
+# plainly (frames 382-421 of each 211 s cycle). B shifts 2 px across the overlap at 615 s.
+extends: _lecture_hall.yaml
+name: gain_screen
+seed: 161
+duration_s: 1200
+screen: {gain: {peak: 1.8, lobe_deg: 20, kind: specular}}
+projectors:
+  a: {position_mm: [1205, 750, 3200]}
+  b: {position_mm: [2795, 750, 3200]}
+camera: {position_mm: [2000, 1875, 6000]}
+content:
+  loop: true
+  items:
+    - {type: deck, densities: [low, medium, high], slides: 5, hold_s: 37, border_frac: 0.05}
+    - {type: black, hold_s: 6}
+    - {type: flat, value: 0.5, hold_s: 20, border_frac: 0.05}
+perturbation:
+  b: {kind: shift, magnitude_px: 2, direction: across, schedule: {type: step, t0_s: 615}}
+sweep:
+  screen.gain.peak: [1.0, 1.8, 2.4]
+  perturbation.b.magnitude_px: [0, 2]

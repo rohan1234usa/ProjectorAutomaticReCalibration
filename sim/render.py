@@ -17,7 +17,9 @@ sum of the camera images of each light source alone, each times its strength:
     E = ambient * E_room + bezel_light * E_bezel + sum_p gain_p * E_p
 
 E_room is the image of the surfaces under unit room light (with the wall around them), E_bezel
-under the bezel's own unit light, and E_p under projector p's light alone (gain_p: its lamp).
+under the bezel's own unit light, and E_p under projector p's light alone (gain_p: its lamp). On a
+gain screen E_p also carries the screen's gain toward the camera for p's light (``sim/room.py``):
+p's light meets its own reflectance map, and the room and bezel light the matte one.
 The Renderer draws these components; ``sim/frames.py`` caches each one until what it depends on
 changes, so a held slide costs one render plus noise per frame, and a lamp dimming or a
 room-light step costs nothing. Components are always summed by :func:`compose` in a fixed order,
@@ -42,6 +44,7 @@ from sim.calibration import CalibrationSetup
 from sim.camera import Camera
 from sim.fiducials import MarkerSet, paint
 from sim.projector import Projector, project
+from sim.room import Room, reflectance_toward_camera
 from sim.screen import Screen, ScreenGrid, surfaces
 
 
@@ -97,6 +100,7 @@ class Renderer:
         camera: Camera,
         quality: Quality,
         markers: MarkerSet | None = None,
+        room: Room | None = None,
     ) -> None:
         if set(projectors) != set(setup.names):
             raise ValueError(f"projectors {sorted(projectors)} do not match calibration {sorted(setup.names)}")
@@ -104,7 +108,7 @@ class Renderer:
             if tuple(p.resolution) != tuple(setup.resolution[name]):
                 raise ValueError(f"projector {name}: resolution differs from the calibration setup")
         self.screen, self.projectors, self.setup = screen, dict(projectors), setup
-        self.camera, self.quality, self.markers = camera, quality, markers
+        self.camera, self.quality, self.markers, self.room = camera, quality, markers, room
         self.mono = camera.color == "mono"
         pitch = setup.finest_pitch_mm()
         self.grid = ScreenGrid.covering_extent(screen.extent_mm, quality.screen_samples_per_px / pitch)
@@ -121,12 +125,23 @@ class Renderer:
             paint(refl, self.grid, markers, screen.bezel.reflectance)
         self.reflectance = readonly(refl)
         self.bezel_mask = readonly(bezel)
+        self._reflectance_for: dict[str, np.ndarray] = {}  # per projector, on a gain screen only
         # Reused between frames (values never carry over): a zeroed grid that each projector's
         # light is drawn into and cleared from, each projector's warp window (A's and B's differ
         # in shape, so each keeps its own), and the camera's large temporaries.
         self._grid_buffer: np.ndarray | None = None
         self._project_workspace: dict[str, dict] = {n: {} for n in setup.names}
         self._workspace: dict = {}
+
+    def reflectance_for(self, name: str) -> np.ndarray:
+        """The reflectance map projector `name`'s light meets, as the camera sees it: the matte map itself
+        unless the screen has gain, then the map with the screen's gain for that projector (built once)."""
+        if self.room is None or not self.room.active:
+            return self.reflectance
+        if name not in self._reflectance_for:
+            self._reflectance_for[name] = readonly(
+                reflectance_toward_camera(self.grid, self.screen, self.reflectance, self.room, name))
+        return self._reflectance_for[name]
 
     def _per_pixel(self, a: np.ndarray) -> np.ndarray:
         """A grid map shaped to multiply a light image (with a channel axis when rendering RGB)."""
@@ -157,7 +172,21 @@ class Renderer:
         return total
 
     def screen_radiance(self, content: np.ndarray, h_actual: Mapping[str, np.ndarray] | None = None) -> np.ndarray:
-        """Radiance of every grid pixel: reflectance x (room light + bezel light + projectors)."""
+        """Radiance of every grid pixel: reflectance x (room light + bezel light + projectors).
+
+        On a gain screen each projector's light meets its own reflectance map (``reflectance_for``).
+        """
+        if self.room is not None and self.room.active:
+            rad = None
+            for name in self.setup.names:
+                irr = self.projector_irradiance(name, self.projector_light(name, content), (h_actual or {}).get(name))
+                irr *= self._per_pixel(self.reflectance_for(name))
+                rad = irr if rad is None else rad + irr
+            diffuse = np.float32(self.screen.ambient) * self.reflectance  # room and bezel light: no gain
+            if self.screen.bezel.light > 0:
+                diffuse += np.float32(self.screen.bezel.light) * self.bezel_mask * self.reflectance
+            rad += self._per_pixel(diffuse)
+            return rad
         irr = self.screen_irradiance(content, h_actual)
         irr += np.float32(self.screen.ambient)
         if self.screen.bezel.light > 0:
@@ -181,7 +210,7 @@ class Renderer:
         try:
             if window is not None:
                 r0, r1, c0, c1 = window
-                irr[r0:r1, c0:c1] *= self._per_pixel(self.reflectance[r0:r1, c0:c1])
+                irr[r0:r1, c0:c1] *= self._per_pixel(self.reflectance_for(name)[r0:r1, c0:c1])
             electrons = camera.expected_electrons(irr, self.grid, self.quality.camera_supersample,
                                                   workspace=self._workspace)
         finally:

@@ -13,7 +13,8 @@ content and the faint black-level raster at the same time.
 
 Below it, a second panel shows the same frame dimmed, with the scenario's true geometry drawn
 on top: each projector's box where it really lands in this frame (its lit raster), the overlap
-polygon where both shine, the content rect and the bezel markers. When aligned, the blend makes
+polygon where both shine, the content rect, the bezel markers and, on a gain screen, a cross at
+each projector's hotspot (``sim/room.py``). When aligned, the blend makes
 the overlap invisible in bright content, so without this panel it is easy to mistake a content
 feature for a projector boundary.
 
@@ -192,6 +193,11 @@ def overlay_panel(scene: Scene, view: np.ndarray, regions: Regions, boxes: dict[
         u, v = square.mean(axis=0)
         cv2.putText(img, str(i), (int(u) - 6 * t, int(v) + 5 * t), cv2.FONT_HERSHEY_SIMPLEX, 0.5 * t, _COLOR_MARKER, t,
                     cv2.LINE_AA)
+    for name, color in ((a, _COLOR_A), (b, _COLOR_B)):  # where each projector's light looks brightest
+        spot = scene.room.hotspot_mm(name)
+        u, v = apply_h(h_cam, spot) if spot is not None else (-1.0, -1.0)
+        if 0 <= u < img.shape[1] and 0 <= v < img.shape[0]:
+            cv2.drawMarker(img, (int(u), int(v)), color, cv2.MARKER_CROSS, 16 * t, t, cv2.LINE_AA)
 
     scale = img.shape[0] * 0.035 / cv2.getTextSize("H", cv2.FONT_HERSHEY_SIMPLEX, 1.0, 1)[0][1]
     pts, masks = regions
@@ -248,7 +254,8 @@ def main(argv: list[str] | None = None) -> dict:
     text = (f"{scenario.variant}  |  frame {args.frame} (t = {float(state.t):.2f} s, offset {truth['truth']['offset_mm']:.3f} mm)"
             f"  |  log display y = ln(1+x/b)/ln(1+1/b), x = radiance / one projector's white, b = black level = 1/{1 / black:.0f}")
     legend = ("true geometry: orange = projector A's box (lit raster)  |  blue dashed = projector B's box  |"
-              "  green = overlap (A and B both shine; blended)  |  white dashed = content rect  |  magenta = markers")
+              "  green = overlap (A and B both shine; blended)  |  white dashed = content rect  |  magenta = markers"
+              + ("  |  crosses = each projector's hotspot" if scene.room.active else ""))
     boxes = {n: box_mm(state.h_actual[n], scene.setup.resolution[n]) for n in scene.setup.names}
     regions = region_masks(scene, border_mm(scenario, args.frame), boxes)
     view = np.vstack([view, caption(view.shape[1], text), overlay_panel(scene, view, regions, boxes, source.camera_for(state)),
@@ -268,6 +275,8 @@ def main(argv: list[str] | None = None) -> dict:
         "render_s": round(t2 - t1, 3),
         "offset_mm": truth["truth"]["offset_mm"],
     }
+    if scene.room.active:
+        summary["hotspot_mm"] = {n: [round(float(v), 3) for v in scene.room.hotspot_mm(n)] for n in scene.setup.names}
     levels = measure_levels(scene, electrons, regions, source.camera_for(state))
     white = white_electrons(scene)
     summary["levels"] = levels

@@ -26,8 +26,8 @@ Read this whole file before writing code. If a simulation result contradicts a d
 choice below, do not silently redesign: write the finding with numbers to
 `docs/findings.md` and raise it.
 
-**Status:** Phases 1 and 2 (the simulator) are done; Phase 3 (detector inputs and geometry) is
-next (section 8).
+**Status:** Phases 1 and 2 (the simulator, with 2c: screen gain and dataset verification) are
+done; Phase 3 (detector inputs and geometry) is next (section 8).
 
 ---
 
@@ -146,6 +146,7 @@ sim/                    # simulator: never imported by detector/; imports nothin
   planar.py             # homographies, convex polygons, the one image warp (sim's own geometry)  [done]
   screen.py             # screen, bezel, wall, room light; the static reflectance map             [done]
   fiducials.py          # ArUco marker layout and exact rendering on the bezel                    [done]
+  room.py               # where projectors and camera stand; the gain screen's hotspot per projector [done]
   projector.py          # resolution, homography px→mm, gamma, black level, colour balance, mono  [done]
   calibration.py        # the blending setup: H_cal, content rect, blend maps, black uplift, framebuffers [done]
   arrangements.py       # presets: side by side, stacked, rotated, corner, different sizes, large overlap [done]
@@ -197,8 +198,12 @@ eval/
 scenarios/              # YAML scenario files (one per test idea; adding a test = adding a file); _lecture_hall.yaml is the shared base
 scripts/
   make_dataset.py       # python -m scripts.make_dataset scenarios/xxx.yaml out/xxx [--frames all|sample|none]  [done]
-  check_dataset.py      # python -m scripts.check_dataset out/xxx: recorded truth vs injected offsets, paired variants [done]
-  check_geometry.py     # the checker's own plane geometry, independent of sim/                  [done]
+  check_dataset.py      # python -m scripts.check_dataset out/xxx [--rerender K] [--strict]: truth vs what the scenario asked [done]
+  check_geometry.py     # the checker's own plane geometry and homographies, independent of sim/ [done]
+  check_timeline.py     # the checker's own timeline: times, schedules, nuisances, content, markers [done]
+  check_frames.py       # stored PNGs and re-rendered frames vs recorded hashes (the one checker that runs sim/) [done]
+  dataset_files.py      # the checkers' own reading of dataset directories and frame hashes      [done]
+  compare_datasets.py   # python -m scripts.compare_datasets A B: are two runs the same dataset, and where not [done]
   run_detector.py       # python -m scripts.run_detector out/xxx --config detector.yaml
   evaluate.py           # python -m scripts.evaluate out/xxx/results.jsonl
   visualize.py          # quick look at one frame, with the true geometry drawn on top            [done]
@@ -409,7 +414,7 @@ Captured after every calibration and refined during `TRUSTED_WINDOW_S`:
 
 Purpose: generate camera frames with known truth. Fidelity matters more than speed, but
 keep a `fast` quality preset for tests (`standard` is the default, `fine` checks that a result
-does not depend on sampling). Everything below is built (Phases 1 and 2) except screen gain.
+does not depend on sampling). Everything below is built (Phases 1 and 2).
 
 - **Screen**: width/height mm, reflectance, room light (ambient), and the wall around it (a
   reflectance lit by the room light).
@@ -417,14 +422,24 @@ does not depend on sampling). Everything below is built (Phases 1 and 2) except 
     its own) carries 8 ArUco DICT_4X4_50 markers. Each is 80 mm with a one-cell white quiet
     zone, which detection needs. They sit at the 4 bezel corners plus two above and two below
     the overlap (beside it, for a horizontal overlap), so a camera zoomed on a vertical
-    overlap still sees ≥ 4 (the zoomed preset is refused for `stacked` and `large_overlap`).
+    overlap still sees ≥ 4 (the zoomed preset is refused for `stacked` and `large_overlap`,
+    where fewer than 4 markers fall in its field; GitHub issue #15 makes that refusal explicit).
   - A static reflectance map renders screen, bezel, wall, paper and ink by exact area coverage
     (per material, so marker edges sit at their true sub-pixel positions).
   - **Default ambient: 0.02** of projector white, a dim lecture hall. Measured in Phase 2:
     8/8 markers found in single frames, centre error p95 0.09 px; at the dark-room 0.0003 none
     are found in a single frame. The `dark_room` scenario covers the dark case.
-  - Optional screen gain and vignetting: a high-gain screen is brighter near its hotspot (not
-    built yet: it needs a gain map per projector; `docs/findings.md`, 2026-10-07).
+  - Optional screen gain (`screen.gain: {peak, lobe_deg, kind}`, `sim/room.py`): a gain screen
+    returns more light in one direction, so the camera sees a hotspot for each projector. The
+    gain is a lobe in the angle α between the direction to the camera and the peak direction
+    (the mirror image of the incoming ray for `specular`, back toward the projector for
+    `retro`): G = 1 + (peak − 1)·exp(−½(α/lobe_deg)²). It needs where things stand:
+    `projectors.<p>.position_mm` and `camera.position_mm` ([x, y] on the screen, z toward the
+    room; by default each projector 1.6 image widths in front of its image's centre, and the
+    camera 1.5 screen widths away, below the screen). The positions set only the gain's angles,
+    never the images, and setup.json never carries them. Each projector's light meets its own
+    reflectance map (the screen's share of each grid pixel gains (G − 1)·ρ_screen); room and
+    bezel light keep gain 1. Peak 1, or no `gain`, is the matte screen and changes no frame.
 - **Projector** (×2):
   - resolution, homography px→mm (from an arrangement preset or explicit corners), gamma,
     brightness, black level (non-zero!), colour balance;
@@ -509,12 +524,18 @@ does not depend on sampling). Everything below is built (Phases 1 and 2) except 
   - Reference mode: the projectors show what was sent `reference.lag_s` earlier, and
     `FrameSource.source(i)` lists the pictures sent before frame i's exposure ends.
   - `scripts/check_dataset.py` checks a dataset's truth against what its scenario asked for,
-    with its own geometry code.
+    with its own code: the geometry (each `h_actual` rebuilt from the request), the timeline
+    (frame times, nuisance state, content shown, the camera, the visible markers), the stored
+    PNGs and, with `--rerender K`, frames rendered again (the one checker that runs `sim/`). A
+    check it cannot run is reported as skipped, and `--strict` fails on it.
+    `scripts/compare_datasets.py` proves two runs are the same dataset, file by file, and says
+    where they differ.
 
 Scenarios are YAML files in `scenarios/`. Adding a test idea must mean adding a YAML file,
-not code. Keys: `name`, `description`, `seed`, `quality`, `screen` (with `bezel` and its
-`markers`), `arrangement`, `projectors`, `blend`, `content` (a sequence), `camera` (with
-`color`, `exposure_s`, `phase_s`), `perturbation`, `nuisances`, `reference`, `duration_s`,
+not code. Keys: `name`, `description`, `seed`, `quality`, `screen` (with `bezel`, its
+`markers`, and `gain`), `arrangement`, `projectors` (each with an optional `position_mm`),
+`blend`, `content` (a sequence), `camera` (with `color`, `exposure_s`, `phase_s`,
+`position_mm`), `perturbation`, `nuisances`, `reference`, `duration_s`,
 `sample_every_s`, `trusted_window_s` (no perturbation or scheduled nuisance may start before
 it), `extends` (deep-merge
 a base file such as `_lecture_hall.yaml`) and `sweep` (dotted keys to lists of values; one
@@ -552,7 +573,9 @@ Reports: `results.jsonl`, `summary.csv`, PNG plots, `report.md` per run.
 
 These YAML scenarios exist in `scenarios/` (built in Phase 2), each to answer a specific
 question. They extend `_lecture_hall.yaml`: ambient 0.02, whole-screen camera, mono,
-`sample_every_s: 0.5`, nothing perturbed before the 600 s trusted window.
+`sample_every_s: 0.5`, nothing perturbed before the 600 s trusted window. `shift_sweep`,
+`camera_zoomed`, `aligned_video` and `repetition_limit` carry the source feed (shown 0.1 s after
+it is sent), for the blind-vs-reference comparison.
 
 | Scenario | Question it answers |
 | --- | --- |
@@ -571,6 +594,7 @@ question. They extend `_lecture_hall.yaml`: ambient 0.02, whole-screen camera, m
 | `repetition_limit` | Stripes of period P with shifts near P/2 and P: measure the aliasing limit (blind echo vs reference kernel). |
 | `camera_zoomed` | Camera on the overlap + control strips only vs whole screen: smallest detectable offset per signal (paired with `shift_sweep`'s across steps). |
 | `dark_room` | Ambient 0.0003 with and without bezel light: can the markers be found, and what does averaging buy? |
+| `gain_screen` | A specular gain screen (peak 1.8 or 2.4; the matte twin at 1): each projector has its own hotspot and the overlap lies between them. Can that fixed shading pass for misalignment, and does a 2 px shift still show under it? |
 
 ---
 
@@ -584,6 +608,7 @@ phase before the done conditions of the phases it depends on hold.
 | 1 Scaffold + simulator core | pyproject, packages, config dataclass; screen, projector, blending setup, content, camera, render chain; `scripts/visualize.py` | A human sees a seamless image with a faint black-level raster around it | — | **done 2026-10-06**: seam 3.2e-6, raster edge within 0.0001 mm, 0.43 s per frame, 68 tests |
 | 2a Simulator datasets | bezel + markers, mono camera, arrangement presets, slide decks and held/flat/black sequences, perturbations + schedules, truth, FrameSource + caches, `make_dataset`, `check_dataset` | `shift_sweep` and `aligned_slides` generate twice with identical metadata and frame hashes; every frame's `offset_mm` within 1e-6 mm of the injected value; markers found 8/8 at ambient 0.02 with centre error < 0.2 px | 1 | **done 2026-10-07**: `--jobs 1` and `--jobs 4` runs byte-identical (34,800 frames each); offset error ≤ 8e-14 mm; marker centres p95 0.092 px, max 0.125 px; 45 ms per unchanged frame; 203 tests (7 slow) |
 | 2b Simulator library | video, textures (photo, dark film, stripes, letterbox, blank overlap), nuisances + flicker, black-level uplift, zoomed camera preset, reference feed, the rest of the §7 catalogue | every §7 scenario loads and renders its event frames; `aligned_video`, `aligned_nuisances`, `camera_zoomed` and `boundary_hidden` generate twice identically; the zoomed camera finds the 4 overlap markers with centre error < 0.2 px; each nuisance has a physics test, with truth still aligned; a video straddle equals the linear-light mix; source timestamps lag the display by `lag_s` | 2a | **done 2026-10-07**, refined 2026-10-08: `--jobs 4` and `--jobs 5` runs byte-identical (52,800 frames each); zoomed marker centres max 0.089 px; lamp, room light and bump exact; flicker moves frame to frame; 280 tests (20 slow) |
+| 2c Screen gain + dataset verification | 3-D positions and per-projector screen gain (`sim/room.py`, `gain_screen`); `compare_datasets`; `check_dataset` request-derived geometry, timeline, PNG and re-render checks, with explicit skips; source feed on `shift_sweep` and `camera_zoomed`; GitHub issues for the deferred nuisances | at peak 1.8 and 2.4, the camera's brightness net of room light over the matte twin's equals the lobe's gain at each hotspot and 600 mm away within 0.1%; peak 1 is bit-identical to matte; every stored 2a/2b dataset passes `check_dataset --rerender` before and after the gain code; `gain_screen`, `shift_sweep` and `camera_zoomed` generate twice identically by `compare_datasets`; `check_dataset` catches a swapped transform, a wrong nuisance state and a stale PNG; the feed changes only the frames exposed within 0.1 s after a slide change, and no PNG | 2b | **done 2026-10-09**: gain within 1.0e-4 of the lobe at both peaks; 766 stored frames (32 variants) re-render to their hashes before and after; the three sweeps generated twice (`--jobs 4` vs 5) are identical, 64,800 frames; the feed changed exactly the predicted 37 frames per variant (481 + 296) and no PNG; issues #3–#18; 336 tests (22 slow) |
 | 3 Detector inputs + geometry | `inputs.py`, `rectify.py`, `polygon.py`, `blending.py`, `geometry.py`, `classify.py`, `results.py` | 200 random convex quad pairs (rotated, corner, nested): overlap, core tiles, controls and pieces valid; blend weights equal the simulator's within 1e-6; rectification error ≤ 0.05 mm; camera bump re-solved within 0.1 mm | 2a | |
 | 4 Boundary (primary) | `edges.py`, `field.py`, `boundary.py`; minimal `eval/feed.py`, `eval/metrics.py`, `scripts/run_detector.py` | On `shift_sweep` and `rotation_sweep`: offset within 0.2 mm of truth whenever available (spec: 0.5 px); `None`, not a wrong number, when edges are hidden; availability ≥ 95% on `aligned_slides` and `aligned_video` | 2a, 3 (`aligned_video`: 2b) | |
 | 5 Runner + decision | `baseline.py`, `pools.py`, `decision.py`, `runner.py`, JSONL output | `aligned_*` including nuisances: zero YES over ≥ 100 intervals; 4 px → YES within `YES_VOTES` intervals; 2 px → YES; 1 px → NO | 4 | |

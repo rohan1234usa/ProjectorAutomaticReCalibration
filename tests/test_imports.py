@@ -31,3 +31,16 @@ def test_packages_stay_separate(package, forbidden):
         for f in files
     }
     assert not {f: m for f, m in offenders.items() if m}
+
+
+@pytest.mark.parametrize("script", ["check_dataset", "check_geometry", "check_timeline", "check_frames",
+                                    "dataset_files", "compare_datasets"])
+def test_the_dataset_checkers_keep_their_own_code(script):
+    """The checkers re-derive the truth apart from the simulator, so its bugs cannot pass its own check.
+
+    Only re-rendering (scripts/check_frames.py) runs the simulator, importing it inside that function.
+    """
+    tree = ast.parse((REPO / "scripts" / f"{script}.py").read_text())
+    top = {alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names}
+    top |= {node.module for node in tree.body if isinstance(node, ast.ImportFrom) and node.module}
+    assert not sorted(m for m in top if m.split(".")[0] == "sim")
