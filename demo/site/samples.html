@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulator Sample Data</title>
+<meta name="description" content="Frames from the projector simulator, with the ground truth the detector never sees.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='8' width='16' height='14' rx='2' fill='%23eb6834'/%3E%3Crect x='13' y='10' width='16' height='14' rx='2' fill='%232a78d6' fill-opacity='.85'/%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem("demo-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="samples">
+<!-- header -->
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <div class="eyebrow">Sample data</div>
+      <h1>What the simulated camera sees</h1>
+      <p class="lead">Every picture on this page is a frame rendered by the simulator, just as it would arrive from a
+        locked 16-bit camera, shrunk for the web. Each comes with its <strong>ground truth</strong>: where each projector's
+        light really lands and how far apart the two put the same content. The detector will never see that truth; it is
+        drawn on top here so you can tell a projector's edge from an edge in the content.</p>
+      <p class="small muted"><span id="samples-made"></span> Click any picture to enlarge it.</p>
+    </div>
+  </section>
+
+  <section class="block" id="installation">
+    <div class="wrap wide">
+      <div class="wrap" style="padding:0">
+        <div class="eyebrow">The installation</div>
+        <h2>A lecture-hall screen, two projectors, one camera</h2>
+        <p class="lead">Projector A lights the left part of the screen and projector B the right; in the middle, the
+          <strong>overlap</strong>, both shine and the calibration software fades one out as the other fades in. Printed
+          markers on the frame around the screen (the bezel) let the camera work out exactly where the screen is.</p>
+      </div>
+      <div id="installation-fig" class="fig"></div>
+      <p class="figcap" id="installation-cap"></p>
+      <div class="wrap" style="padding:0">
+        <details class="more"><summary>Technical details</summary><div class="body">
+          <ul>
+            <li>Screen <span data-v="samples.inputs.setup.screen.size_mm" data-fmt="dims"></span> mm,
+              <span data-v="samples.installation.about.reflectance"></span> reflectance, room light
+              <span data-v="samples.installation.about.ambient"></span> of projector white (a dim lecture hall), a
+              <span data-v="samples.installation.about.bezel_mm" data-fmt="f0"></span> mm bezel with
+              <span data-v="samples.installation.about.markers"></span> ArUco markers
+              (<span data-v="samples.installation.about.dictionary"></span>, <span data-v="samples.installation.about.marker_mm" data-fmt="f0"></span> mm).</li>
+            <li>Two <span data-v="samples.installation.about.projector_px" data-fmt="dims"></span> px projectors, each image
+              <span data-v="samples.installation.about.image_mm" data-fmt="f0"></span> mm wide
+              (<span data-v="samples.installation.about.pitch_mm" data-fmt="f3"></span> mm per pixel); a
+              <span data-v="samples.installation.about.overlap_mm" data-fmt="f0"></span> mm overlap; B sits
+              <span data-v="samples.installation.about.b_lower_mm" data-fmt="f1"></span> mm lower so the two pixel grids never line up.
+              The blend is <span data-v="samples.installation.about.blend"></span>, in linear light; black level
+              1/<span data-v="samples.installation.about.black_ratio"></span> of white.</li>
+            <li>Camera <span data-v="samples.inputs.setup.camera.resolution" data-fmt="dims"></span> px, mono, 16-bit linear, whole screen
+              plus a <span data-v="samples.installation.about.camera_margin" data-fmt="percent"></span> margin with a
+              <span data-v="samples.installation.about.camera_keystone" data-fmt="percent"></span> keystone (about
+              <span data-v="samples.installation.about.camera_px_per_mm" data-fmt="f2"></span> camera px per mm); exposure
+              <span data-v="samples.installation.about.exposure_s" data-fmt="reciprocal"></span> s; one frame every
+              <span data-v="samples.installation.about.sample_every_s"></span> s.</li>
+            <li>Toggle <em>shadows boosted</em> to see the frame through a log curve: the faint glow of each projector's black level
+              around the picture becomes visible.</li>
+          </ul>
+        </div></details>
+        <h3 style="margin-top:32px">How a frame is made</h3>
+        <svg class="diagram" viewBox="0 0 1000 150" role="img" aria-label="Render chain: content, framebuffers, projector light, screen, camera">
+          <defs><marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+          <g>
+            <rect class="box" x="0" y="30" width="170" height="86" rx="10"/><text x="85" y="66" text-anchor="middle">Content</text><text class="sub" x="85" y="88" text-anchor="middle">slides, photos, video</text>
+            <rect class="box" x="207" y="30" width="170" height="86" rx="10"/><text x="292" y="66" text-anchor="middle">Framebuffers</text><text class="sub" x="292" y="88" text-anchor="middle">built at calibration geometry</text>
+            <rect class="box" x="414" y="30" width="170" height="86" rx="10"/><text x="499" y="66" text-anchor="middle">Projector light</text><text class="sub" x="499" y="88" text-anchor="middle">gamma, blend, black level</text>
+            <rect class="box" x="621" y="30" width="170" height="86" rx="10"/><text x="706" y="66" text-anchor="middle">Screen</text><text class="sub" x="706" y="88" text-anchor="middle">where it really lands, + room</text>
+            <rect class="box" x="828" y="30" width="170" height="86" rx="10"/><text x="913" y="66" text-anchor="middle">Camera</text><text class="sub" x="913" y="88" text-anchor="middle">blur, pixels, noise, 16-bit</text>
+            <path class="arrow" d="M172,73 H203"/><path class="arrow" d="M379,73 H410"/><path class="arrow" d="M586,73 H617"/><path class="arrow" d="M793,73 H824"/>
+            <text class="sub" x="706" y="140" text-anchor="middle">a misalignment changes only this step</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="shift">
+    <div class="wrap">
+      <div class="eyebrow">Misalignment</div>
+      <h2>From invisible to obvious</h2>
+      <p class="lead">The same moment of the same lecture, with projector B moved across the overlap by 0 to 8 of its
+        pixels. Everything else is identical, down to the camera noise, because the variants of a sweep share
+        their random draws. Pick a size.</p>
+      <div class="controls" id="shift-controls"></div>
+      <div class="cols">
+        <figure class="fig"><div id="shift-crop0"></div><figcaption>A patch of the overlap at the camera's own resolution, enlarged.</figcaption></figure>
+        <figure class="fig"><div id="shift-crop1"></div><figcaption>Another patch of the overlap.</figcaption></figure>
+      </div>
+      <figure class="fig" style="margin-top:20px"><div id="shift-diff"></div>
+        <figcaption id="shift-diff-cap"></figcaption></figure>
+      <div class="readouts" id="shift-readouts"></div>
+      <details class="more"><summary>Technical details</summary><div class="body">
+        <p>Scenario <code>shift_sweep</code>, frame <span data-v="samples.shift.frame"></span> (t = <span data-v="samples.shift.t_s" data-fmt="f1"></span> s):
+          B moved at <span data-v="samples.timelines.shift.onset_s" data-fmt="f0"></span> s, after the
+          <span data-v="samples.timelines.shift.trusted_window_s" data-fmt="f0"></span> s trusted window. One projector pixel is
+          <span data-v="samples.timelines.shift.pitch_mm" data-fmt="f4"></span> mm. The difference map shows |frame − aligned twin| at full colour
+          from <span data-v="samples.shift.diff_scale_e" data-fmt="int"></span> electrons (a quarter of one projector's white), on a dimmed copy of the frame.</p>
+        <p>Where A shines alone the difference is exactly zero: the largest change there is
+          <span data-v="samples.shift.a_only_max_e" data-fmt="f1"></span> electrons, at any size. Where B shines alone, B's whole picture moved:
+          nobody can see that, because nothing there is compared with anything. It shows only in the overlap, and at B's outer edge.</p>
+      </div></details>
+    </div>
+  </section>
+
+  <section class="block" id="arrangements">
+    <div class="wrap">
+      <div class="eyebrow">Arrangements</div>
+      <h2>Any overlap shape</h2>
+      <p class="lead">The projectors may sit side by side, one above the other, at an angle, meeting at a corner, at
+        different sizes, or mostly on top of each other. The overlap is never assumed: it is the intersection of
+        the two boxes, whatever shape that is. The colour strip under each frame shows who lights each point:
+        <span class="dot a"></span>A, <span class="dot b"></span>B, and the mix where the blend shares them.</p>
+      <div class="grid" id="arrangements-grid" style="margin-top:16px"></div>
+    </div>
+  </section>
+
+  <section class="block" id="content">
+    <div class="wrap">
+      <div class="eyebrow">Content</div>
+      <h2>Whatever is on the screen</h2>
+      <p class="lead">The check has to work during real lectures, whatever is on screen. Each kind of frame is useful for
+        something. Textured regions show doubled contours. Flat regions show brightness changes. Dark regions show each
+        projector's outline. Frames with motion or a cut are skipped, because a camera exposure that spans two video
+        frames already looks doubled.</p>
+      <div class="grid small" id="content-grid" style="margin-top:16px"></div>
+      <details class="more"><summary>Technical details: the routing thresholds</summary><div class="body">
+        <p>CLAUDE.md §4.3 routes each region by its mean brightness and edge density: <em>dark</em> below DARK_LEVEL
+          (<span data-v="common.config.values.DARK_LEVEL"></span> of white), and <em>skip</em> when the mean frame difference exceeds MOTION_LEVEL
+          (<span data-v="common.config.values.MOTION_LEVEL"></span> of white). Each card lists the overlap's mean brightness as the camera
+          measures it, then with the room light taken away, and, for moving content, the mean change from the previous frame.
+          The badge applies those two thresholds. Textured versus flat needs a per-tile edge density, which phase 3 will define,
+          so other content keeps the kind it was chosen for. With the room at 0.02 of white, even a black frame measures about
+          0.021 of white, so the badges judge "dark" after taking the room light away. Even then, neither dark-film frame
+          counts as dark, and the moving one changes far too little to be skipped. Both are open questions for phase 3; see the
+          findings on the tests page.</p>
+      </div></details>
+    </div>
+  </section>
+
+  <section class="block" id="dark">
+    <div class="wrap">
+      <div class="eyebrow">Black frames</div>
+      <h2>What the camera sees in the dark</h2>
+      <p class="lead">A projector's black still leaks a little light, about 1/1500 of its white. In a black frame that leak
+        outlines each projector's full box, even the edges hidden under the other projector, and the overlap glows twice
+        as bright. It is faint, about <span data-v="samples.dark.black_e" data-fmt="f0"></span> electrons on top of
+        <span data-v="samples.dark.room_e" data-fmt="int"></span> from the room light. Averaging frames brings it out.</p>
+      <div class="controls" id="dark-controls"></div>
+      <div id="dark-fig"></div>
+      <p class="figcap">Room light removed, then stretched from <span data-v="samples.dark.stretch_e.0"></span> to
+        <span data-v="samples.dark.stretch_e.1"></span> electrons. Frames <span data-v="samples.dark.first"></span>–<span data-v="samples.dark.last"></span>
+        of <code>shift_sweep</code>, during its black interlude.</p>
+      <div id="dark-profile" style="margin-top:20px"></div>
+      <details class="more"><summary>Technical details</summary><div class="body">
+        <p>Per-pixel noise is <span data-v="samples.dark.noise_e.single" data-fmt="f1"></span> electrons in one frame and
+          <span data-v="samples.dark.noise_e.mean" data-fmt="f1"></span> in the mean of <span data-v="samples.dark.count"></span>; the profile
+          averages along the screen's height as well. Levels in the mean, at the middle of each region: unlit
+          <span data-v="samples.dark.levels.unlit" data-fmt="f1"></span>, A only <span data-v="samples.dark.levels.A only" data-fmt="f1"></span>,
+          overlap <span data-v="samples.dark.levels.overlap" data-fmt="f1"></span>, B only <span data-v="samples.dark.levels.B only" data-fmt="f1"></span>
+          electrons. This is the raw material of
+          <a href="algorithm.html#boundary">boundary analysis</a>.</p>
+      </div></details>
+    </div>
+  </section>
+
+  <section class="block" id="nuisances">
+    <div class="wrap">
+      <div class="eyebrow">Nuisances</div>
+      <h2>Things that must never trigger a YES</h2>
+      <p class="lead">Real rooms are untidy. The camera gets knocked, a lamp ages, someone switches the lights on, people
+        walk past, projectors flicker, a camera leaves its sharpening on. None of these moves a projector, so the truth
+        stays <strong>aligned</strong>, and the detector must keep answering NO.</p>
+      <div class="stack" id="nuisance-list" style="margin-top:16px"></div>
+    </div>
+  </section>
+
+  <section class="block" id="gain">
+    <div class="wrap">
+      <div class="eyebrow">Screens and cameras</div>
+      <h2>A gain screen, and a camera zoomed on the overlap</h2>
+      <p class="lead">A <strong>gain screen</strong> sends more light back in one direction, so each projector shows a
+        hotspot where its light reflects toward the camera, and the overlap falls between the two. That fixed shading must
+        not pass for misalignment. A <strong>zoomed camera</strong> sees only the overlap, its control strips and four markers,
+        at <span data-v="samples.zoomed.px_per_mm" data-fmt="f2"></span> camera pixels per mm instead of
+        <span data-v="samples.installation.about.camera_px_per_mm" data-fmt="f2"></span>.</p>
+      <div class="cols" style="margin-top:16px">
+        <figure class="fig"><div id="gain-matte"></div><figcaption>Matte screen, flat grey.</figcaption></figure>
+        <figure class="fig"><div id="gain-peak"></div><figcaption id="gain-peak-cap"></figcaption></figure>
+      </div>
+      <div id="gain-profile" style="margin-top:16px"></div>
+      <div class="cols" style="margin-top:32px">
+        <div id="zoomed-frames" class="grid small"></div>
+        <div>
+          <h3>Zoomed camera</h3>
+          <p>At <span data-v="samples.zoomed.px_per_mm" data-fmt="f2"></span> camera px per mm the doubling is plain to see. Here is the same
+            window at each shift:</p>
+          <div class="cols" id="zoomed-crops"></div>
+          <p class="small muted">The sensor is turned 90° for a vertical overlap; frames are turned back here.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="truth">
+    <div class="wrap">
+      <div class="eyebrow">Ground truth</div>
+      <h2>What each scenario asks the detector to notice</h2>
+      <p class="lead">For every frame the simulator records the <strong>true offset</strong>: how far apart A and B now put
+        the same piece of content, at the worst point of the overlap. These timelines come straight from that record.</p>
+      <div class="stack">
+        <div id="truth-shift"></div>
+        <div class="cols">
+          <div id="truth-drift"></div>
+          <div>
+            <h3>Rotations: same offset, different angle</h3>
+            <p class="small">Turning B about its centre or about its far corner. An offset at the overlap needs half the angle
+              when the pivot is twice as far away.</p>
+            <div id="truth-rotation"></div>
+          </div>
+        </div>
+        <div>
+          <h3>Six nuisances at once, and the offset stays zero</h3>
+          <div id="truth-lanes"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="inputs">
+    <div class="wrap">
+      <div class="eyebrow">The detector's contract</div>
+      <h2>What the detector may read, and what it never sees</h2>
+      <p class="lead">On real hardware the detector gets camera frames and what the calibration software knows:
+        <code>setup.json</code> below. The simulator also writes one line of ground truth per frame, used only to score
+        the detector afterwards. The highlighted fields are the truth.</p>
+      <div class="cols">
+        <div><h3>setup.json <span class="badge done">the detector reads this</span></h3><pre class="code json" id="setup-json"></pre></div>
+        <div><h3>metadata.jsonl, one line <span class="badge failed">never shown to the detector</span></h3><pre class="code json" id="line-json"></pre>
+          <p class="small muted" id="line-cap"></p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="catalogue">
+    <div class="wrap">
+      <div class="eyebrow">Scenario catalogue</div>
+      <h2>One scenario per question</h2>
+      <p class="lead">Each scenario is a YAML file, so adding a test idea means adding a file, not code. Counts come from the files themselves.</p>
+      <div id="catalogue-table"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer"><div class="wrap">Frames rendered by <code>sim/</code> through <code>demo/</code>; ground truth from <code>sim/truth.py</code>.</div></footer>
+
+<script src="data/common.js"></script>
+<script src="data/samples.js"></script>
+<script src="assets/core.js"></script>
+<script src="assets/charts.js"></script>
+<script src="assets/page-samples.js"></script>
+</body>
+</html>

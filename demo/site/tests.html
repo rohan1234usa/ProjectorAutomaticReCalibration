@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test Results So Far</title>
+<meta name="description" content="The project's test suite, run when this site was built, with each phase's done condition and the dated findings.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='8' width='16' height='14' rx='2' fill='%23eb6834'/%3E%3Crect x='13' y='10' width='16' height='14' rx='2' fill='%232a78d6' fill-opacity='.85'/%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem("demo-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="tests">
+<!-- header -->
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <div class="eyebrow">The tests so far</div>
+      <h1>What has been proven</h1>
+      <p class="lead">Every phase ends with its tests passing, a dated finding with numbers, and a commit. The first phases prove the
+        <strong>simulator</strong>: every number it reports must hold: where light lands, how bright it is, what the camera records,
+        and the ground truth of every frame. The detector will later be scored against exactly that truth. The line below
+        says when the suite ran.</p>
+      <p class="small muted" id="run-line"></p>
+      <div class="kpis" id="test-kpis" style="margin-top:20px"></div>
+    </div>
+  </section>
+
+  <section class="block" id="areas">
+    <div class="wrap">
+      <div class="eyebrow">By area</div>
+      <h2>Where the tests are</h2>
+      <p class="lead">Each part of the simulator has its own test file, written as unit tests, property tests and fixed-seed
+        regressions, with tolerances stated in millimetres or in relative brightness.</p>
+      <div id="area-bars" style="margin-top:12px"></div>
+      <h3 style="margin-top:32px">The slowest tests</h3>
+      <div id="slowest"></div>
+    </div>
+  </section>
+
+  <section class="block" id="explorer">
+    <div class="wrap">
+      <div class="eyebrow">Every test</div>
+      <h2>Test explorer</h2>
+      <p class="lead">Open a test to read what it checks and its source code. Names come from the code. Where a test has no
+        docstring, its name is shown in words.</p>
+      <div class="toolbar">
+        <input type="search" id="test-search" placeholder="Search tests, e.g. marker, seam, offset" aria-label="Search tests">
+        <select id="test-file" aria-label="Filter by file"><option value="">All files</option></select>
+        <select id="test-outcome" aria-label="Filter by result"><option value="">All results</option><option>passed</option><option>failed</option><option>error</option><option>skipped</option></select>
+        <span class="small muted" id="test-count"></span>
+      </div>
+      <div class="table-wrap explorer"><div class="explorer-list" id="test-list"></div></div>
+      <div id="slow-not-run"></div>
+    </div>
+  </section>
+
+  <section class="block" id="files">
+    <div class="wrap">
+      <div class="eyebrow">By file</div>
+      <h2>What each test file covers</h2>
+      <div id="file-table"></div>
+    </div>
+  </section>
+
+  <section class="block" id="phases">
+    <div class="wrap">
+      <div class="eyebrow">Done conditions</div>
+      <h2>What each phase had to prove</h2>
+      <p class="lead">From the build order in CLAUDE.md §8. A phase is done only when its done condition holds; its status records
+        the numbers it actually reached.</p>
+      <div id="phase-table"></div>
+    </div>
+  </section>
+
+  <section class="block" id="findings">
+    <div class="wrap">
+      <div class="eyebrow">docs/findings.md</div>
+      <h2>Findings, dated</h2>
+      <p class="lead">When a result contradicts the design, it is written here with numbers and raised, never silently
+        designed around. Newest last.</p>
+      <div class="stack" id="findings-list"></div>
+    </div>
+  </section>
+
+  <section class="block" id="run-yourself">
+    <div class="wrap">
+      <div class="eyebrow">Run them yourself</div>
+      <h2>Commands</h2>
+      <pre class="code">uv sync
+uv run pytest                    # the default suite (slow tests excluded)
+uv run pytest -m slow            # the demo-scale checks; minutes
+uv run python -m scripts.make_site --serve   # rebuild this site and serve it on localhost</pre>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer"><div class="wrap">Results from pytest's JUnit report (<a href="data/junit.xml">data/junit.xml</a>); test text and source read from <code>tests/</code>.</div></footer>
+
+<script src="data/common.js"></script>
+<script src="data/tests.js"></script>
+<script src="assets/core.js"></script>
+<script src="assets/charts.js"></script>
+<script src="assets/page-tests.js"></script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 """Frames on demand: the same frame in any order or process, paired variants, linear-light mixing, mono."""
 
 import copy
+import dataclasses
 import subprocess
 import sys
 from pathlib import Path
@@ -73,6 +74,18 @@ def test_truth_needs_no_render_and_reports_the_step(variants):
     assert lines[ONSET]["perturbation"][0]["vector_mm"] == pytest.approx([4 * 250.0 / 240.0, 0.0])
     assert lines[3]["content"]["cut_in_exposure"] and lines[3]["content"]["tag"] == "deck_high+deck_low"
     assert lines[0]["truth"]["markers_visible"] == list(range(8))
+
+
+def test_unlit_is_the_frame_with_both_projectors_off():
+    """unlit() is the room and bezel light that expected() starts from: with both lamps at zero they agree exactly."""
+    cfg = copy.deepcopy(TINY_BEZEL)
+    cfg["screen"]["bezel"]["light"] = 0.01
+    source = FrameSource(scenario_from_dict(cfg))
+    state = source.state(0)
+    off = dataclasses.replace(state, gains={name: 0.0 for name in state.gains})
+    unlit = source.unlit(state)
+    assert np.array_equal(unlit, source.expected(0, off))
+    assert unlit.min() > 0 and np.all(source.expected(0) >= unlit)  # room light everywhere; projectors only add
 
 
 def test_mono_is_the_rec709_luminance_of_rgb():
