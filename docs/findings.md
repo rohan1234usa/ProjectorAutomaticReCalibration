@@ -909,3 +909,97 @@ hygiene from the audit (#15: zoomed refusal by name, a bounded camera-view cache
 memory, pixel comparison). Scenarios: never-dark overlap content for `boundary_hidden` (#16),
 a thermal cycle with A or both perturbed (#17), `aligned_nuisances` paired with
 `aligned_slides` (#18).
+
+## 2026-10-10 — Demo site: what its illustrations measured, and two routing thresholds to revisit
+
+`python -m scripts.make_site --serve` builds a static site into `out/site` and serves it on
+localhost (`demo/`, `scripts/make_site.py`; README "Demo site"). It shows:
+- sample frames with their ground truth drawn on top;
+- the planned detector explained step by step, with five small interactive models;
+- the test suite as run at build time, test by test, next to the §8 done conditions and this file.
+
+A standard-quality build takes about 65 s, with a 2.5 GB peak, 100 images and 8.7 MB. It runs
+338 tests (23 slow ones deselected). `demo/manifest.py` re-checks every chosen frame against its scenario
+before rendering, without rendering, so a changed scenario stops the build instead of mislabelling
+a picture. `demo/` uses `sim/` only; `tests/test_imports.py` now also holds it to never importing
+`detector/`, and holds both packages to never importing it.
+
+Its algorithm figures compute, with ground truth at hand, what the detector will compute. They
+are teaching illustrations, not detector code, but their numbers are worth keeping. All of them
+come from the whole-screen camera at standard quality, against the aligned twin of each sweep
+variant.
+
+### Numbers
+
+**Pairing.** In `shift_sweep` frame 1300, where A shines alone in both frames, every variant
+(0.25 to 8 px across, 8 px along) differs from its aligned twin by exactly 0 electrons. The
+noise draws are shared, so a difference map shows only what B's move changed.
+
+**Hotspot** (`gain_screen`, matte, flat grey 0.5, B 2 px across, frame 1250).
+- The overlap dims by 0.7268% at its middle, 0.363% per projector pixel.
+- The model is b(x − u) − b(x) times L / (L + room + 2·black) = 0.911, with nothing fitted. It
+  gives 0.7269% and matches the noiseless profile to 2.1e-7 rms inside the overlap, 5 mm clear of
+  its edges.
+- One noisy exposure, averaged along the overlap, stays within 2.3e-6 rms of the model.
+- §4.3's planning figure of 0.40% per pixel assumed no room light; at ambient 0.02 the dilution
+  of 0.911 gives 0.364%.
+- B's raster edge leaves a −0.18% sliver at x ≈ 1796 mm that the ramp model leaves out.
+
+**Echo** (`demo/cepstrum.py`). 30 core tiles of 56 camera px (TILE_MM at 0.864 px/mm), their
+control tiles, and the 16 distinct slides after the onset, pooled and scored once with the
+config's thresholds. The floor is 2.5 camera px, or 2.89 mm.
+
+| B moved | true offset | best peak beyond the floor | needed (MIN_PEAK_SNR, 1.5 × null) | verdict |
+|---|---|---|---|---|
+| 0 | 0 | 9.9 | 27.4 | none |
+| 1 px | 1.04 mm | 17.9 | 24.0 | none |
+| 2 px | 2.08 mm | 40.5, on the floor's rim | 21.3 | unresolved |
+| 4 px | 4.17 mm | 99.6 | 22.0 | resolved at 4.24 mm |
+| 8 px | 8.33 mm | 92.1 | 27.4 | resolved at 8.21 mm |
+
+The null test is what rejects the aligned twin, as the 2026-10-07 replan expected. Two parts of
+the design turned out to matter even for an illustration:
+- **The null, and enough content.** In a trial at fast quality, pooling only the 5 slides of one
+  loop over half the core tiles, the aligned twin scored 22.5 against a null of 10.7, a false
+  detection. 16 slides and every core tile were needed.
+- **Agreement between tiles.** Scored tile by tile instead (fast quality, 16 tiles, 16 slides),
+  8 px passed in only 2 tiles, and the aligned twin's one passing tile pointed elsewhere. So the
+  per-tile agreement step (RANSAC, Phase 6a) carries real weight. The tests needed to set its
+  inlier fraction belong to Phase 6a.
+
+"Unresolved" here means a peak that passes but is only the flank of something higher inside the
+floor; that rule is the illustration's, and Phase 6a should define its own.
+
+**Boundary evidence** (black frames 1517–1528 against 371–382, mean of 12, room light removed;
+per-pixel noise 16.8 e⁻ in one frame, 4.9 e⁻ in the mean).
+- Black level: 8.7 e⁻ per projector, 18.0 e⁻ in the overlap, on 262 e⁻ of room light.
+- With B moved 8.33 mm, the 50% crossings of B's raster edges moved 8.43 and 8.26 mm. A's moved
+  0.000. B's picture edge on a slide moved 8.333 mm.
+
+**Truth timelines.** `slow_drift` crosses TOLERANCE_MM (1.7 mm, 1.63 px) at 6470 s, 1.63 h after
+its onset at 600 s. That is the 1 px/h rate, quantized to 0.02 px.
+
+### Raised, not changed (for Phase 3, `classify.py`)
+
+1. **DARK_LEVEL (0.003 of white) sits below the room light (0.02).** Overlap means in the content
+   library, as measured and then net of the room light:
+
+   | frame | as measured | room light removed |
+   |---|---|---|
+   | black (`shift_sweep` 375) | 0.0213 | 0.0013 |
+   | dark film, moving (`dark_film` 100) | 0.0235 | 0.0036 |
+   | dark film, still (`dark_film` 500) | 0.0399 | 0.0200 |
+
+   Read literally ("region mean below DARK_LEVEL × white"), no region is ever dark at ambient
+   0.02, so the inner edges would never be seen. Judged net of the unlit level that the screen
+   outside both rasters shows, black frames are dark, but neither dark-film frame is, the moving
+   one by only 0.0006. Phase 3 should define "dark" relative to that level and decide whether dim
+   film counts.
+2. **MOTION_LEVEL (0.02 of white) can never catch dark scenes.**
+   - Moving dark film changes 0.0035 of white between samples, a sixth of the threshold, so it is
+     never skipped.
+   - Photo-style video changes 0.056 and 0.076, so it is.
+   - A threshold relative to the region's own level would treat both alike.
+
+The demo applies both thresholds net of the room light and labels the result. It changes no
+config value.

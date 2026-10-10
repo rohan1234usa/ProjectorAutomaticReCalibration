@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projector Drift Demo</title>
+<meta name="description" content="A camera-based check that tells when two blended projectors have drifted apart: the simulator, the planned algorithm and the tests so far.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='8' width='16' height='14' rx='2' fill='%23eb6834'/%3E%3Crect x='13' y='10' width='16' height='14' rx='2' fill='%232a78d6' fill-opacity='.85'/%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem("demo-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="index">
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html"><svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="8" width="16" height="14" rx="2" fill="var(--a)"/><rect x="13" y="10" width="16" height="14" rx="2" fill="var(--b)" fill-opacity=".85"/></svg>Projector drift</a>
+    <nav class="site-nav" aria-label="Pages">
+      <a href="index.html" data-page="index">Overview</a>
+      <a href="samples.html" data-page="samples">Sample data</a>
+      <a href="algorithm.html" data-page="algorithm">Algorithm</a>
+      <a href="tests.html" data-page="tests">Tests</a>
+    </nav>
+    <button class="theme-toggle" type="button" aria-label="Switch theme"></button>
+  </div>
+</header>
+<div class="status-strip"><div class="wrap"></div></div>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <div class="eyebrow">Two projectors, one picture</div>
+      <h1>Have the projectors drifted apart?</h1>
+      <p class="lead">Two projectors share one screen in a lecture hall, blended where they overlap so they read as a
+        single picture. Over hours they drift. Today a professor checks by eye and presses the calibration
+        software's <em>recalibrate</em> button. This project builds a camera-based check that answers the same question
+        every 30 seconds: <strong>YES</strong>, they have drifted far enough for someone in the room to notice, or
+        <strong>NO</strong>.</p>
+      <p class="lead">No hardware exists yet, so everything is developed against a <strong>simulator</strong> that renders the
+        projectors, the screen, the room and the camera, and knows the true answer for every frame.</p>
+      <div class="kpis" style="margin-top:28px">
+        <div class="kpi"><div class="label">Tests passing</div><div class="value" id="kpi-tests">–</div><div class="sub" id="kpi-tests-sub"></div></div>
+        <div class="kpi"><div class="label">Test scenarios</div><div class="value" data-v="common.counts.scenarios" data-fmt="int">–</div><div class="sub"><span data-v="common.counts.variants" data-fmt="int"></span> variants</div></div>
+        <div class="kpi"><div class="label">Frames of ground truth</div><div class="value" data-v="common.counts.frames" data-fmt="int">–</div><div class="sub">one every 0.5 s of simulated time</div></div>
+        <div class="kpi"><div class="label">Build phases done</div><div class="value" id="kpi-phases">–</div><div class="sub">the simulator; the detector is next</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="see-it">
+    <div class="wrap cols wide-left">
+      <div>
+        <div class="eyebrow">What drift looks like</div>
+        <h2>Same frame, before and after projector B moved 8 pixels</h2>
+        <p class="lead">This is a patch of the <strong>overlap</strong>, where both projectors light the same part of the screen,
+          as the simulated camera records it. Drag the slider. On the left the projectors are aligned and the text is crisp.
+          On the right projector B has moved 8 of its pixels (<span data-v="samples.shift.steps.6.offset_mm" data-fmt="f1"></span> mm) and
+          every letter appears twice.</p>
+        <p>At 1 or 2 pixels the doubling is a slight blur. The check has to notice it at about the size a viewer
+          would, and never mistake anything else for it.</p>
+        <p><a href="samples.html#shift">Step through every size from 0.25 to 8 pixels →</a></p>
+      </div>
+      <figure class="fig" id="hero-compare"></figure>
+    </div>
+  </section>
+
+  <section class="block" id="how">
+    <div class="wrap">
+      <div class="eyebrow">How the check will work</div>
+      <h2>Four ideas, in order of trust</h2>
+      <p class="lead">The camera only ever sees the combined picture, whatever the lecture is showing. No test pattern
+        is projected. The detector is designed (<a href="algorithm.html">the algorithm page</a> walks through it)
+        but not built yet.</p>
+      <div class="grid four" style="margin-top:20px">
+        <a class="card" href="algorithm.html#boundary"><div class="step-num">1</div><h3>Watch each projector's edges</h3>
+          <p>Each projector's light covers a slightly tilted rectangle on the screen. Its outline shows faintly even in
+            black frames, because a projector's black is never fully black. Measure both outlines after calibration, then
+            re-measure them every 30 seconds.</p><span class="go">Boundary analysis →</span></a>
+        <a class="card" href="algorithm.html#overlap"><div class="step-num">2</div><h3>Look inside the overlap</h3>
+          <p>When the edges hint at a move, look at the overlap itself for doubled contours, for a band that is brighter
+            or darker than at calibration, and for the picture's border splitting into two.</p><span class="go">Overlap check →</span></a>
+        <a class="card" href="algorithm.html#nuisances"><div class="step-num">3</div><h3>Compare A with B, never with the past picture</h3>
+          <p>Every measurement compares projector A with projector B. A bumped camera moves both, and a dimmer lamp
+            changes brightness without moving anything, so neither can fake a YES.</p><span class="go">What must never cause YES →</span></a>
+        <a class="card" href="algorithm.html#decision"><div class="step-num">4</div><h3>Decide carefully</h3>
+          <p>Say YES only after 3 of 4 checks agree. Go back to NO only well below the threshold. Answer "can't tell"
+            rather than guess; that keeps the previous answer.</p><span class="go">Fusion and decision →</span></a>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="roadmap">
+    <div class="wrap">
+      <div class="eyebrow">Where the project is</div>
+      <h2>Build order</h2>
+      <p class="lead">Each phase ends with its tests passing, a dated finding with numbers, and a commit. The simulator
+        (phases 1 to 2c) is done. Phase 3 starts the detector.</p>
+      <div class="roadmap" id="roadmap-strip" style="margin-top:16px"></div>
+      <p style="margin-top:16px"><a href="tests.html#phases">What each phase had to prove, and the numbers it reached →</a></p>
+    </div>
+  </section>
+
+  <section class="block" id="explore">
+    <div class="wrap">
+      <div class="grid">
+        <a class="card" href="samples.html"><h3>Sample data</h3><p>Frames from the simulator: six arrangements, every kind of
+          content, misalignment from invisible to obvious, and the nuisances that must never trigger a YES.</p><span class="go">Open →</span></a>
+        <a class="card" href="algorithm.html"><h3>The algorithm</h3><p>Each step of the planned detector, explained in plain words
+          first, with figures from the simulator and five small interactive models.</p><span class="go">Open →</span></a>
+        <a class="card" href="tests.html"><h3>The tests so far</h3><p>The test suite, run when this site was built, test by
+          test, with what each phase was required to prove and the dated findings.</p><span class="go">Open →</span></a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer"><div class="wrap">
+  Built by <code>python -m scripts.make_site</code> from the repository: the simulator renders the samples, pytest
+  runs the tests, and CLAUDE.md, docs/findings.md and detector.yaml supply the rest.
+</div></footer>
+
+<script src="data/common.js"></script>
+<script src="data/tests.js"></script>
+<script src="data/samples.js"></script>
+<script src="assets/core.js"></script>
+<script src="assets/charts.js"></script>
+<script src="assets/page-index.js"></script>
+</body>
+</html>

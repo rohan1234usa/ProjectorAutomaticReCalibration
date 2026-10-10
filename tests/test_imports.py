@@ -1,6 +1,7 @@
 """Hard rules from CLAUDE.md section 3: detector/ imports nothing from sim/, and sim/ nothing from detector/.
 
-Only the harness (eval/, scripts/) may use both.
+Only the harness (eval/, scripts/) may use both. The demo site (demo/) uses the simulator only, and
+neither package may use the demo.
 """
 
 import ast
@@ -22,7 +23,8 @@ def _imported_modules(path: Path) -> set[str]:
     return names
 
 
-@pytest.mark.parametrize("package, forbidden", [("detector", "sim"), ("sim", "detector")])
+@pytest.mark.parametrize("package, forbidden", [("detector", "sim"), ("sim", "detector"), ("demo", "detector"),
+                                                ("sim", "demo"), ("detector", "demo")])
 def test_packages_stay_separate(package, forbidden):
     files = sorted((REPO / package).rglob("*.py"))
     assert files, f"{package} package not found"

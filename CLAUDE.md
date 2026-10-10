@@ -27,7 +27,9 @@ choice below, do not silently redesign: write the finding with numbers to
 `docs/findings.md` and raise it.
 
 **Status:** Phases 1 and 2 (the simulator, with 2c: screen gain and dataset verification) are
-done; Phase 3 (detector inputs and geometry) is next (section 8).
+done; Phase 3 (detector inputs and geometry) is next (section 8). A static demo site
+(`python -m scripts.make_site --serve`) shows sample frames, explains this design and lists the
+test results; its findings (`docs/findings.md`, 2026-10-10) raise two routing thresholds for Phase 3.
 
 ---
 
@@ -195,6 +197,15 @@ eval/
   metrics.py            # detection rate vs offset, FPR, latency, availability, per-type confusion
   sweep.py              # run the detector over datasets with threshold sweeps
   report.py             # CSV + PNG plots + per-scenario diagnostic images + report.md
+demo/                   # static demo site: sample data, the planned algorithm, the tests so far; uses sim/, never detector/ [done]
+  manifest.py           # which frames the pages show, re-checked against the scenarios without rendering [done]
+  renders.py            # one FrameSource per scenario family, shared by sweep variants that differ only in perturbation [done]
+  figures.py, gallery.py  # sample-data figures with their true geometry; overlays.py draws it [done]
+  evidence.py, cepstrum.py  # algorithm illustrations, made with ground truth and labelled as teaching only [done]
+  timelines.py          # truth over time from states, no render                                  [done]
+  sources.py, markdown.py, testrun.py  # CLAUDE.md, findings.md, detector.yaml (as text) and the pytest run [done]
+  site.py, serve.py, images.py  # assemble out/site safely, serve on 127.0.0.1, display curves  [done]
+  site/                 # the hand-written pages, CSS and JS; data arrives as data/*.js           [done]
 scenarios/              # YAML scenario files (one per test idea; adding a test = adding a file); _lecture_hall.yaml is the shared base
 scripts/
   make_dataset.py       # python -m scripts.make_dataset scenarios/xxx.yaml out/xxx [--frames all|sample|none]  [done]
@@ -207,7 +218,8 @@ scripts/
   run_detector.py       # python -m scripts.run_detector out/xxx --config detector.yaml
   evaluate.py           # python -m scripts.evaluate out/xxx/results.jsonl
   visualize.py          # quick look at one frame, with the true geometry drawn on top            [done]
-tests/                  # pytest; unit + property + regression (fixed seeds); -m slow for demo scale [done: Phases 1, 2]
+  make_site.py          # python -m scripts.make_site [out/site] [--samples standard|fast|skip] [--tests fast|all|skip] [--serve] [done]
+tests/                  # pytest; unit + property + regression (fixed seeds); -m slow for demo scale [done: Phases 1, 2, demo]
 docs/
   findings.md           # dated findings with numbers
   research/pseudocode.md  # the original pseudocode this brief generalizes
@@ -218,6 +230,9 @@ Hard rules:
   `tests/test_imports.py` enforces both.
 - The harness (`eval/`, `scripts/`) is the only place the two meet. `eval/feed.py` is the
   only module that turns simulator output into detector input.
+- The demo site (`demo/`) uses `sim/` and never `detector/`; it reads `detector.yaml` as text.
+  Neither package imports `demo/`. `tests/test_imports.py` enforces all three. Detector output
+  shown on the site will come from the harness's results, never from importing `detector/`.
 - The detector never sees ground truth.
 
 ---

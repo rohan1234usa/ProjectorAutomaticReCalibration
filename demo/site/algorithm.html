@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Planned Detector</title>
+<meta name="description" content="How the planned detector decides whether two blended projectors have drifted, step by step.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='8' width='16' height='14' rx='2' fill='%23eb6834'/%3E%3Crect x='13' y='10' width='16' height='14' rx='2' fill='%232a78d6' fill-opacity='.85'/%3E%3C/svg%3E">
+<script>try{var t=localStorage.getItem("demo-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="algorithm">
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html"><svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="8" width="16" height="14" rx="2" fill="var(--a)"/><rect x="13" y="10" width="16" height="14" rx="2" fill="var(--b)" fill-opacity=".85"/></svg>Projector drift</a>
+    <nav class="site-nav" aria-label="Pages">
+      <a href="index.html" data-page="index">Overview</a>
+      <a href="samples.html" data-page="samples">Sample data</a>
+      <a href="algorithm.html" data-page="algorithm">Algorithm</a>
+      <a href="tests.html" data-page="tests">Tests</a>
+    </nav>
+    <button class="theme-toggle" type="button" aria-label="Switch theme"></button>
+  </div>
+</header>
+<div class="status-strip"><div class="wrap"></div></div>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <div class="eyebrow">The algorithm</div>
+      <h1>How the check will decide</h1>
+      <p class="lead">This is the planned detector from the project brief (CLAUDE.md §4), step by step, most trusted
+        first. It is <strong>designed but not built</strong>: building starts with phase 3. The pictures are real simulator frames.
+        Where a figure computes something the detector will compute, it is a teaching illustration, made with the
+        simulator's ground truth at hand, and it is labelled as one.</p>
+      <svg class="diagram" viewBox="0 0 1000 300" role="img" aria-label="Pipeline: camera frames are rectified and routed; boundary analysis runs every 30 seconds; when it reports a move, or every 15 minutes, the overlap check runs; fusion and a voting decision produce YES or NO.">
+        <defs><marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+        <rect class="box" x="0" y="112" width="140" height="76" rx="10"/><text x="70" y="145" text-anchor="middle">Camera frames</text><text class="sub" x="70" y="167" text-anchor="middle">every 0.5 s</text>
+        <rect class="box" x="170" y="104" width="180" height="92" rx="10"/><text x="260" y="137" text-anchor="middle">Rectify, route</text><text class="sub" x="260" y="158" text-anchor="middle">markers → millimetres</text><text class="sub" x="260" y="177" text-anchor="middle">skip · dark · flat · textured</text>
+        <rect class="box primary" x="390" y="16" width="230" height="96" rx="10"/><text x="505" y="50" text-anchor="middle">Boundary analysis</text><text class="sub" x="505" y="72" text-anchor="middle">primary · every 30 s</text><text class="sub" x="505" y="92" text-anchor="middle">each outline vs calibration</text>
+        <rect class="box secondary" x="390" y="188" width="230" height="96" rx="10"/><text x="505" y="222" text-anchor="middle">Overlap check</text><text class="sub" x="505" y="244" text-anchor="middle">secondary · when triggered</text><text class="sub" x="505" y="264" text-anchor="middle">contours · hotspots · borders</text>
+        <rect class="box" x="676" y="112" width="140" height="76" rx="10"/><text x="746" y="145" text-anchor="middle">Fusion</text><text class="sub" x="746" y="167" text-anchor="middle">one offset</text>
+        <rect class="box out" x="852" y="112" width="148" height="76" rx="10"/><text class="inv" x="926" y="145" text-anchor="middle">YES / NO</text><text class="sub inv" x="926" y="167" text-anchor="middle">3 of 4 votes</text>
+        <path class="arrow" d="M142,150 H166"/>
+        <path class="arrow" d="M352,136 C370,126 368,72 386,66"/>
+        <path class="arrow dashed" d="M352,164 C370,174 368,228 386,234"/>
+        <path class="arrow" d="M505,114 V184"/>
+        <text class="sub" x="515" y="146">if over TRIGGER_MM,</text><text class="sub" x="515" y="164">or every 15 min</text>
+        <path class="arrow" d="M622,64 C652,70 650,124 672,134"/>
+        <path class="arrow" d="M622,236 C652,230 650,176 672,166"/>
+        <path class="arrow" d="M818,150 H848"/>
+      </svg>
+    </div>
+  </section>
+
+  <section class="block" id="baseline">
+    <div class="wrap cols">
+      <div>
+        <div class="eyebrow">Step 0</div>
+        <h2>Right after calibration is the truth</h2>
+        <p class="lead">Calibration is the one moment the projectors are known to be aligned. Everything the camera measures
+          in the next ten minutes becomes the <strong>baseline</strong> that later checks compare with: each projector's
+          outline, the overlap's brightness, the edge positions. A new calibration replaces the baseline and resets the
+          answer to NO.</p>
+      </div>
+      <details class="more" open><summary>Technical details</summary><div class="body">
+        <p>The trusted window is TRUSTED_WINDOW_S = <span data-v="common.config.values.TRUSTED_WINDOW_S"></span> s. In it the boxes are refined
+          as more dark and lit frames arrive, and the pools for the overlap check are filled. The baseline stores the camera homography
+          and marker centres, both boxes with corner covariance, the overlap geometry, per-piece edge positions, per-block brightness
+          ratios, border steps, the lamp ratio, a noise model and (in reference mode) kernel offsets. No scenario moves a projector inside it.</p>
+      </div></details>
+    </div>
+  </section>
+
+  <section class="block" id="rectify">
+    <div class="wrap">
+      <div class="eyebrow">Step 1</div>
+      <h2>From camera pixels to millimetres on the screen</h2>
+      <p class="lead">The camera sees the screen at a slant, so its pixels don't map evenly onto the screen. Four or more
+        printed markers on the bezel are enough to work out the mapping and redraw the frame on an even millimetre grid.
+        On that grid each projector's light is the four-sided shape the calibration placed. From here on every distance
+        is in millimetres.</p>
+      <div id="rectified-fig"></div>
+      <div class="note illustration"><strong>Illustration.</strong> This frame was redrawn with the camera position the simulator
+        knows. The detector will work it out from the marker centres (phase 3).</div>
+      <details class="more"><summary>Technical details</summary><div class="body">
+        <ul>
+          <li>The homography is solved from marker <strong>centres</strong>, not corners: detected corners sit about 0.65 px inside the
+            true ones (0.27 px with sub-pixel refinement), and centres cancel that. Straight-line fits to each marker's four
+            outer edges locate a centre to p95 0.09 px in one frame (findings, 2026-10-07).</li>
+          <li>The canvas is CANVAS_PX_PER_MM = <span data-v="common.config.values.CANVAS_PX_PER_MM"></span> px per mm (shown here at 1).
+            Frames are linear: the pedestal is subtracted and the gain divided, both known camera settings.</li>
+          <li>If the markers move more than FIDUCIAL_MOVE_PX = <span data-v="common.config.values.FIDUCIAL_MOVE_PX"></span> px, the camera moved:
+            the mapping is solved again, the pools are reset, and a <code>camera_moved</code> warning is raised. A camera bump can never produce a YES.</li>
+        </ul>
+      </div></details>
+    </div>
+  </section>
+
+  <section class="block" id="boundary">
+    <div class="wrap">
+      <div class="eyebrow">Step 2 · primary</div>
+      <h2>Boundary analysis: watch each projector's outline</h2>
+      <p class="lead">Each projector lights a slightly tilted four-sided shape: its <strong>box</strong>. The outer edges of
+        the combined picture always show against the unlit screen. The inner edges, hidden under the other projector,
+        show in dark frames, through each projector's black level. Every 30 seconds the detector re-measures whatever
+        edges it can see and fits how B has moved <em>relative to A</em>. This works whatever the content, which is why it
+        is trusted first.</p>
+      <h3 style="margin-top:28px">B's edges move with B; A's stay put</h3>
+      <p>Black frames averaged twelve at a time, before and after B moved 8 px. Each panel is the brightness across one edge,
+        room light removed. The step's position is the edge's position.</p>
+      <div class="multiples" id="raster-edges"></div>
+      <h3 style="margin-top:28px">Try it: move B, or knock the camera</h3>
+      <p>Each short stroke is one 80 mm edge piece. A piece can only tell how far its own edge moved straight across itself
+        (n̂·u, drawn ×25). Filled dots are outer edges and hollow dots inner ones. Knock the camera and every piece sees
+        motion, yet the relative offset stays at zero.</p>
+      <div id="boundary-toy"></div>
+      <div class="cols" style="margin-top:24px">
+        <div>
+          <h3>On a bright slide, the picture's own edge works too</h3>
+          <div class="multiples" id="picture-edges"></div>
+        </div>
+        <div>
+          <h3>When the software hides the overlap's glow</h3>
+          <p>Some blending software lifts each projector's black outside the overlap, so black looks even everywhere. Then the
+            inner edges vanish in dark frames while aligned. After a drift, the lift no longer meets the other raster's edge
+            and a step appears.</p>
+          <div class="controls" id="uplift-controls"></div>
+          <div id="uplift-fig"></div>
+        </div>
+      </div>
+      <details class="more"><summary>Technical details</summary><div class="body">
+        <ul>
+          <li>Evidence comes as <strong>edge pieces</strong> of EDGE_PIECE_MM = <span data-v="common.config.values.EDGE_PIECE_MM"></span> mm. Each owns
+            one projector, knows its outward normal, and is seen by content border, black level or blend ramp. It gives one number,
+            n̂·u, with an uncertainty from its edge fit. Pieces below MIN_EDGE_SNR = <span data-v="common.config.values.MIN_EDGE_SNR"></span> are not used.</li>
+          <li>A and B are fitted <strong>jointly</strong>, with a shared camera-motion term, by weighted least squares with Huber weights.
+            The model is the relative homography B-vs-A: 6 parameters first, 8 only if a pattern remains. A box needs evidence at
+            two or more angles, or the interval answers "boundary not visible" (None), never a guess.</li>
+          <li><code>offset_mm</code> is the largest displacement over the calibrated overlap. Planning budget: a black-level piece localizes to
+            ≈ 0.11 mm in one frame and ≈ 0.02 mm over 30; a content-border piece to ≈ 0.004 mm.</li>
+          <li>Measured here: in the dark frames B's edges moved by <span id="raster-shift"></span>, and A's by <span id="raster-still"></span>.</li>
+        </ul>
+      </div></details>
+    </div>
+  </section>
+
+  <section class="block" id="overlap">
+    <div class="wrap">
+      <div class="eyebrow">Step 3 · secondary, triggered</div>
+      <h2>The overlap check: three signs of misalignment</h2>
+      <p class="lead">When the boundary reports an offset over TRIGGER_MM (<span data-v="common.config.values.TRIGGER_MM"></span> mm), and
+        regardless every <span data-v="common.config.values.SAFETY_CHECK_S" data-fmt="duration"></span>, the detector looks inside the overlap. It has
+        pooled frames by kind. Textured patches go to the double-contour test, flat ones to the brightness test.
+        Frames with motion, cuts or clipping are skipped.</p>
+
+      <h3 id="echo" style="margin-top:28px">1 · Double contours</h3>
+      <p>When B has moved, everything in the overlap appears twice: once where A puts it, once where B does. A
+        <strong>cepstrum</strong>, the Fourier transform of the log of the spectrum, turns "the picture plus a shifted copy"
+        into a single peak at the shift. Text has its own repeats, such as line spacing and letter pitch. So the same is
+        computed just outside the overlap, where only one projector shines, and subtracted: a pattern found on both sides
+        is content, and a pattern found only inside is misalignment.</p>
+      <div id="cepstrum-toy"></div>
+      <h4 style="margin-top:24px">On real frames: core tiles minus control tiles</h4>
+      <div class="note illustration"><strong>Illustration, not the detector.</strong> Log spectra are pooled over all
+        <span data-v="algorithm.echo.tiles.core"></span> core tiles and <span id="echo-frames"></span> slides shown after B moved, then scored once.
+        The detector will score each tile and ask the tiles to agree on one smooth motion (phase 6a).</div>
+      <div class="grid five" id="cepstrum-panels"></div>
+      <details class="more"><summary>Technical details</summary><div class="body">
+        <ul>
+          <li>Tiles of TILE_MM = <span data-v="common.config.values.TILE_MM"></span> mm are cut on the camera grid, <span data-v="algorithm.echo.tile_px"></span> px
+            at <span data-v="algorithm.echo.px_per_mm" data-fmt="f3"></span> camera px per mm. Resampling first would lock peaks to the camera pitch. Core tiles
+            have both blend weights ≥ CORE_MIN_WEIGHT = <span data-v="common.config.values.CORE_MIN_WEIGHT"></span>. Control tiles are found by walking
+            along the blend gradient to CTRL_MARGIN_MM = <span data-v="common.config.values.CTRL_MARGIN_MM"></span> mm beyond the far inner edge.</li>
+          <li>Per tile: a linear high-pass (the tile minus its blur), a Hann window, the log power spectrum, pooled. The cepstrum is the magnitude of its
+            inverse transform, as a robust z-score (median, 1.4826·MAD). diff = z(core) − mean z(controls).</li>
+          <li>A disk of the floor, max(ECHO_FLOOR_CAMERA_PX, MIN_OFFSET_MM at this scale) = <span data-v="algorithm.echo.floor_px" data-fmt="f2"></span> px
+            (<span data-v="algorithm.echo.floor_mm" data-fmt="f2"></span> mm), is blanked. The best peak outside it must reach MIN_PEAK_SNR =
+            <span data-v="common.config.values.MIN_PEAK_SNR"></span> and NULL_FACTOR = <span data-v="common.config.values.NULL_FACTOR"></span> × the
+            control-vs-control null.</li>
+          <li>Verdicts here: <em>resolved</em> means the peak passes and is a peak of its own outside the floor. <em>Unresolved</em>
+            means it passes but is only the flank of something higher inside the floor: an echo too close to the origin to size
+            (the illustration's own rule). <em>None</em> means
+            nothing passes, which is reported as None with an upper bound at the floor, never as 0.</li>
+        </ul>
+      </div></details>
+
+      <h3 id="hotspots" style="margin-top:40px">2 · Brightness hotspots</h3>
+      <p>Inside the overlap, A's fade-out and B's fade-in add up to exactly one. Move B and its fade moves with it, so the
+        two no longer add to one: the overlap dims or brightens in a band shaped like the fade's slope. A dimmer lamp does
+        something different: it tilts the whole overlap toward B's side. Flat content shows both.</p>
+      <div class="cols">
+        <div>
+          <div id="hotspot-map"></div>
+          <div id="hotspot-profile" style="margin-top:12px"></div>
+          <p class="small muted">Flat grey on a matte screen. Projector B moved 2 px across, divided by the aligned twin. Measured from the
+            simulator's noiseless frames and from one noisy exposure, with the model drawn on top. Nothing is fitted.</p>
+        </div>
+        <div id="hotspot-toy"></div>
+      </div>
+      <details class="more"><summary>Technical details</summary><div class="body">
+        <ul>
+          <li>Model: Δr(x) = −∇b(x)·u + (g − 1)·b(x) + trend. Here, exactly: b(x − u) − b(x), diluted by room light and black level to
+            L / (L + room + 2·black) = <span data-v="algorithm.hotspot.factor" data-fmt="f3"></span>.</li>
+          <li>Measured: a <span data-v="algorithm.hotspot.dip_pct" data-fmt="f3"></span>% dip for <span data-v="algorithm.hotspot.offset_mm" data-fmt="f2"></span> mm,
+            i.e. <span data-v="algorithm.hotspot.per_px_pct" data-fmt="f3"></span>% per pixel. The brief's planning estimate is 0.40% per pixel without room light.
+            Model error over the overlap: <span id="hotspot-rms"></span>.</li>
+          <li>Each block's ratio to its flat flanks is compared with the baseline over MIN_SEAM_FRAMES = <span data-v="common.config.values.MIN_SEAM_FRAMES"></span>
+            flat frames. Blocks must pass FLAT_MAX_DEV = <span data-v="common.config.values.FLAT_MAX_DEV"></span>. A fitted lamp gain off by more than LAMP_WARN =
+            <span data-v="common.config.values.LAMP_WARN"></span> raises a lamp warning, not a YES. The sign of the change also fixes the echo's sign.</li>
+        </ul>
+      </div></details>
+
+      <h3 id="borders" style="margin-top:40px">3 · Offset borders</h3>
+      <p>Where the picture's own edge runs through the overlap, A and B each draw a copy of it. Aligned, the copies
+        coincide: one sharp step. Move B along the edge's normal and the step splits in two, each half as tall.</p>
+      <div class="cols">
+        <div id="border-profile"></div>
+        <div><div class="grid small" id="border-crops"></div>
+          <p class="small muted">The bottom edge of the slide inside the overlap, enlarged: aligned, then B moved 4 and 8 px down.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="reference">
+    <div class="wrap">
+      <div class="eyebrow">Reference mode</div>
+      <h2>When the video feed can be read too</h2>
+      <p class="lead">If the script can also read the picture being sent to the projectors (from a screen capture or an HDMI
+        splitter), it no longer has to guess the content. For each patch it can work out where each projector put the
+        content, comparing the sent picture with what the camera saw a moment later. That has no resolution floor.</p>
+      <div class="cols">
+        <figure class="fig"><div id="ref-source"></div><figcaption>Sent to the projectors.</figcaption></figure>
+        <figure class="fig"><div id="ref-camera"></div><figcaption>What the camera recorded, <span data-v="algorithm.reference.lag_s"></span> s later.</figcaption></figure>
+      </div>
+      <details class="more"><summary>Technical details</summary><div class="body">
+        <p>The last SOURCE_RING = <span data-v="common.config.values.SOURCE_RING"></span> source frames are kept. The one matching the camera frame best (NCC on
+          downsampled images, at least MATCH_MIN_NCC = <span data-v="common.config.values.MATCH_MIN_NCC"></span>) is used. Per tile, the cross spectrum Σ O·conj(S)
+          and the power Σ|S|² are pooled into a Wiener kernel, k = IFFT(Σ O·conj(S) / (Σ|S|² + λ·mean power)), with λ = WIENER_LAMBDA =
+          <span data-v="common.config.values.WIENER_LAMBDA"></span>. The kernel of a control tile peaks where that projector alone puts the content.
+          Offset = centroid(k_B) − centroid(k_A), so camera motion cancels. Planning estimate: within ≈ 0.1 mm for 0.5–4 mm offsets.
+          Only repetitive content at whole-period shifts fools it, and then only the boundary can tell.</p>
+        <p>At this frame the source ring held: <span id="ref-ring"></span>.</p>
+      </div></details>
+    </div>
+  </section>
+
+  <section class="block" id="decision">
+    <div class="wrap">
+      <div class="eyebrow">Step 4</div>
+      <h2>Fusion and decision</h2>
+      <p class="lead">The boundary's estimate leads. When the overlap check also ran and agrees, confidence rises. When
+        it sees more, with two or more signs agreeing, it takes over. When the boundary sees much more than the overlap check,
+        the detector suspects the edge fit and holds for an interval. The answer flips to YES only after
+        <span data-v="common.config.values.YES_VOTES.0"></span> of the last <span data-v="common.config.values.YES_VOTES.1"></span> intervals
+        are over tolerance. It returns to NO only when the offset falls below half the tolerance, and "can't tell" keeps the
+        previous answer.</p>
+      <div id="decision-toy"></div>
+      <details class="more"><summary>Technical details</summary><div class="body">
+        <p>Layers agree within AGREE_MM = <span data-v="common.config.values.AGREE_MM"></span> mm. A disagreement may hold for at most HOLD_MAX_INTERVALS =
+          <span data-v="common.config.values.HOLD_MAX_INTERVALS"></span>. The overlap check contradicts the boundary only when it was informative: it resolved
+          tiles, and the boundary offset is above the echo floor plus AGREE_MM. Each interval logs <code>answer</code>, <code>offset_mm</code>,
+          <code>offset_px</code>, <code>confidence</code>, <code>boundary_available</code>, <code>symptoms</code>, <code>mode</code> and <code>warnings</code> as JSONL.
+          Comparing those logs with the professor's own button presses is how the thresholds get set.</p>
+      </div></details>
+    </div>
+  </section>
+
+  <section class="block" id="nuisances">
+    <div class="wrap">
+      <div class="eyebrow">Self-referencing</div>
+      <h2>What must never cause a YES</h2>
+      <p class="lead">Each nuisance changes the picture without moving one projector relative to the other. The design
+        answers each one by comparing A with B, never with an old picture. You can see each one on the
+        <a href="samples.html#nuisances">sample data page</a>.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Nuisance</th><th>What it does to the picture</th><th>Why it cannot fake a YES</th></tr></thead>
+        <tbody>
+          <tr><td>Camera bump</td><td>Everything moves, markers included</td><td>Markers re-solve the view; a shared camera term in the joint fit absorbs what is left; <code>camera_moved</code> resets the pools</td></tr>
+          <tr><td>Lamp dimming</td><td>One projector's light drops (15% in the test)</td><td>Fitted as a lamp gain that tilts the overlap rather than shifting the ramp; |g − 1| over LAMP_WARN is a warning</td></tr>
+          <tr><td>Room light</td><td>Everything brightens at once</td><td>Comparisons are ratios between A and B and with flanks, and the room adds to both</td></tr>
+          <tr><td>Someone walking past</td><td>Part of the screen and a marker disappear</td><td>The frame difference exceeds MOTION_LEVEL, so the frame is skipped; markers hidden for long → can't tell</td></tr>
+          <tr><td>Flicker</td><td>Rolling bands, moving frame to frame</td><td>Exposure locked to a multiple of the refresh period; bands that move are not edges</td></tr>
+          <tr><td>In-camera sharpening</td><td>Halos along every edge: a fake second contour</td><td>Halos appear inside and outside the overlap alike, so control tiles cancel them</td></tr>
+          <tr><td>Black-level uplift</td><td>Hides the overlap's glow in dark frames</td><td>Part of the blending setup the detector reads; a drift breaks the match and shows a step</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section class="block" id="tolerance">
+    <div class="wrap">
+      <div class="eyebrow">The threshold</div>
+      <h2>How big is "noticeable"?</h2>
+      <p class="lead">YES means a person would notice. As a starting point, that is about one arcminute of the viewer's sight
+        from the closest seat: D·tan(1′). It will later be learned from when the professor actually presses recalibrate.
+        In the simulator it is swept.</p>
+      <div class="cols">
+        <div id="tolerance-toy"></div>
+        <div><h3>Every tunable</h3><p class="small">From <code>detector.yaml</code>: names are the contract; the values are first guesses.</p></div>
+      </div>
+      <div id="config-table" style="margin-top:16px"></div>
+    </div>
+  </section>
+
+  <section class="block" id="origin">
+    <div class="wrap">
+      <div class="eyebrow">Where the design comes from</div>
+      <h2>From a vertical seam to any overlap</h2>
+      <p class="lead">The design started as pseudocode dated 1 October 2026, written for two projectors side by side with a
+        vertical blend band and a camera on that band. Its tests carry over: the echo, the seam profile, the reference
+        kernel, the decision rule, the edge cases. The brief generalizes it in three ways:</p>
+      <div class="grid">
+        <div class="card"><h3>Any arrangement</h3><p>Side by side, stacked, rotated, at a corner, at different sizes, or mostly
+          on top of each other. The overlap is measured as the intersection of two boxes.</p></div>
+        <div class="card"><h3>The whole screen in view</h3><p>The camera sees both projectors' full outlines and the markers
+          at the corners, not just the band.</p></div>
+        <div class="card"><h3>Edges first</h3><p>Boundary analysis of each projector's box is the primary tool because it works
+          whatever the content is. The overlap check confirms it.</p></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer"><div class="wrap">Design: CLAUDE.md §4 and docs/research/pseudocode.md. Figures: <code>demo/evidence.py</code> and <code>demo/cepstrum.py</code>.</div></footer>
+
+<script src="data/common.js"></script>
+<script src="data/samples.js"></script>
+<script src="data/algorithm.js"></script>
+<script src="assets/core.js"></script>
+<script src="assets/charts.js"></script>
+<script src="assets/toys.js"></script>
+<script src="assets/page-algorithm.js"></script>
+</body>
+</html>

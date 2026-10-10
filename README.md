@@ -32,6 +32,9 @@ frame's truth to what its scenario asked for, and `compare_datasets` proves two 
 The disruptions that are still to be simulated are tracked as
 [GitHub issues](https://github.com/rohan1234usa/ProjectorAutomaticReCalibration/issues).
 
+A demo site shows all of this in a browser: sample frames with their ground truth, the planned
+detector explained step by step, and the test results (see [Demo site](#demo-site) below).
+
 Next is Phase 3, where the detector itself starts: its inputs and geometry (CLAUDE.md §8).
 
 ## Quick start
@@ -84,14 +87,31 @@ uv run python -m scripts.compare_datasets out/shift_sweep out/shift_sweep_again
 dataset's `scenario.yaml`; with `--frames sample` or `all`, its stored hash proves it is the
 same frame. The slow, demo-scale tests run with `uv run pytest -m slow`.
 
+## Demo site
+
+A static site shows sample frames from the simulator with their ground truth, explains the
+planned detector step by step with small interactive models, and lists the test results test by
+test. Build it and serve it on localhost:
+
+```bash
+uv run python -m scripts.make_site --serve
+```
+
+Then open http://localhost:8000. The build renders about a hundred figures (about a minute at
+standard quality), runs the default test suite and reads CLAUDE.md, docs/findings.md and
+detector.yaml into `out/site/`. `--samples fast` renders quicker. `--tests all` adds the slow
+tests. `--samples skip --tests skip` keeps the last build's figures and results, to refresh the
+pages alone. The pages also open straight from disk, without a server.
+
 ## Layout
 
 | Path | What it holds |
 |---|---|
 | `sim/` | The simulator: screen, bezel and markers, projectors and their arrangements, where they stand and the screen's gain, the calibration software's blending setup, content over time, perturbations, camera, render chain, ground truth and datasets. |
 | `detector/` | The detector, which only sees camera frames and the blending setup. So far it holds its configuration. |
-| `scripts/` | Command-line tools: make, view, check and compare datasets. The checkers keep their own code, apart from `sim/`. |
+| `scripts/` | Command-line tools: make, view, check and compare datasets; build the demo site. The checkers keep their own code, apart from `sim/`. |
+| `demo/` | The demo site: which frames it shows, the figures drawn from them, the readers of the docs and the test run, and the hand-written pages. It uses `sim/`, never `detector/`. |
 | `scenarios/` | One YAML file per test idea; `_lecture_hall.yaml` is the installation they share. |
 | `tests/` | The test suite. |
 
-`detector/` and `sim/` never import each other.
+`detector/` and `sim/` never import each other, and neither imports `demo/`.
