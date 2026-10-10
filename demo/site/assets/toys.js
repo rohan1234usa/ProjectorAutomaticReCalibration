@@ -149,32 +149,44 @@
   }
 
   /* ---- Boundary boxes --------------------------------------------------------------------- */
-  function boundaryToy(container, arrangements, cfg, pitch) {
-    const order = ["side_by_side", "stacked", "rotated", "corner", "different_sizes", "large_overlap"];
-    const names = [...order.filter((n) => n in arrangements), ...Object.keys(arrangements).filter((n) => !order.includes(n))];
-    const state = { name: names[0], tx: 4, ty: 0, rot: 0, kx: 0, ky: 0 };
+  const LIMITS = { shift: 6, turn: 0.25, camera: 5 }; // slider ends: mm, degrees, mm
+  const EXAG = 25; // motion is drawn this many times larger
+
+  const centreOf = (poly) => poly.reduce((acc, p) => [acc[0] + p[0] / poly.length, acc[1] + p[1] / poly.length], [0, 0]);
+
+  /* Room around the screen for the largest motion the sliders allow, drawn ×EXAG: nothing ever leaves the figure. */
+  function padFor(g) {
+    const cb = centreOf(g.b);
+    const arm = Math.max(...g.b.map(([x, y]) => Math.hypot(x - cb[0], y - cb[1])));
+    const reach = EXAG * (Math.SQRT2 * LIMITS.shift + ((LIMITS.turn * Math.PI) / 180) * arm + Math.SQRT2 * LIMITS.camera);
+    const [W, H] = g.screen;
+    const gap = Math.min(...[...g.a, ...g.b].flatMap(([x, y]) => [x, y, W - x, H - y]));
+    return Math.max(80, reach - gap + 40);
+  }
+
+  function boundaryToy(container, arrangements, cfg) {
+    const state = { at: 0, tx: 4, ty: 0, rot: 0, kx: 0, ky: 0 };
     const pic = el("div"), ro = readout();
-    const select = el("select", { "aria-label": "Arrangement" }, names.map((n) => el("option", { value: n, text: n.replace(/_/g, " ") })));
-    select.addEventListener("change", () => { state.name = select.value; draw(); });
+    const select = el("select", { "aria-label": "Arrangement" }, arrangements.map((g, i) => el("option", { value: i, text: g.preset.replace(/_/g, " ") })));
+    select.addEventListener("change", () => { state.at = +select.value; draw(); });
     const sliders = [
-      slider("B moves right (mm)", -10, 10, 0.1, state.tx, (v) => num(v, 1), (v) => { state.tx = v; draw(); }),
-      slider("B moves down (mm)", -10, 10, 0.1, state.ty, (v) => num(v, 1), (v) => { state.ty = v; draw(); }),
-      slider("B turns (degrees)", -0.3, 0.3, 0.005, state.rot, (v) => num(v, 3), (v) => { state.rot = v; draw(); }),
-      slider("Camera bumped right (mm)", -30, 30, 0.5, state.kx, (v) => num(v, 1), (v) => { state.kx = v; draw(); }),
-      slider("Camera bumped down (mm)", -30, 30, 0.5, state.ky, (v) => num(v, 1), (v) => { state.ky = v; draw(); }),
+      slider("B moves right (mm)", -LIMITS.shift, LIMITS.shift, 0.1, state.tx, (v) => num(v, 1), (v) => { state.tx = v; draw(); }),
+      slider("B moves down (mm)", -LIMITS.shift, LIMITS.shift, 0.1, state.ty, (v) => num(v, 1), (v) => { state.ty = v; draw(); }),
+      slider("B turns (degrees)", -LIMITS.turn, LIMITS.turn, 0.005, state.rot, (v) => num(v, 3), (v) => { state.rot = v; draw(); }),
+      slider("Camera bumped right (mm)", -LIMITS.camera, LIMITS.camera, 0.1, state.kx, (v) => num(v, 1), (v) => { state.kx = v; draw(); }),
+      slider("Camera bumped down (mm)", -LIMITS.camera, LIMITS.camera, 0.1, state.ky, (v) => num(v, 1), (v) => { state.ky = v; draw(); }),
     ];
     container.append(el("div", { class: "toy" },
       el("div", { class: "controls" }, el("label", { class: "small" }, "Arrangement ", select)),
       el("div", { class: "sliders" }, sliders.map((s) => s.node)), pic, ro));
-    const EXAG = 25;
     function draw() {
-      const g = arrangements[state.name];
-      const cb = g.b.reduce((acc, p) => [acc[0] + p[0] / 4, acc[1] + p[1] / 4], [0, 0]);
+      const g = arrangements[state.at];
+      const cb = centreOf(g.b);
       const th = (state.rot * Math.PI) / 180, c = Math.cos(th), s = Math.sin(th);
       const moveB = ([x, y]) => [cb[0] + c * (x - cb[0]) - s * (y - cb[1]) + state.tx, cb[1] + s * (x - cb[0]) + c * (y - cb[1]) + state.ty];
       const k = [state.kx, state.ky];
       const seen = (p, owner, ex = 1) => { const m = owner === "b" ? moveB(p) : p; return [p[0] + ex * (m[0] - p[0] + k[0]), p[1] + ex * (m[1] - p[1] + k[1])]; };
-      const [W, H] = g.screen, pad = 120;
+      const [W, H] = g.screen, pad = padFor(g);
       const v = svg("svg", { viewBox: `${-pad} ${-pad} ${W + 2 * pad} ${H + 2 * pad}`, role: "img", "aria-label": "The two boxes, their edge pieces and what each piece measures" });
       v.append(svg("rect", { x: 0, y: 0, width: W, height: H, fill: "var(--surface-2)", stroke: "var(--border-2)" }));
       const pts = (poly) => poly.map((p) => p.join(",")).join(" ");
@@ -192,9 +204,11 @@
         maxObs = Math.max(maxObs, Math.abs(obs));
         const col = owner === "a" ? "var(--a)" : "var(--b)";
         const base = seen(m, owner, EXAG);
+        const outer = piece.kind === "outer";
         v.append(svg("line", { x1: base[0], y1: base[1], x2: base[0] + piece.normal[0] * obs * EXAG, y2: base[1] + piece.normal[1] * obs * EXAG,
-          stroke: col, "stroke-width": 12, "stroke-linecap": "round", opacity: piece.kind === "inner" ? 0.55 : 1 }));
-        v.append(svg("circle", { cx: base[0], cy: base[1], r: 13, fill: piece.kind === "inner" ? "var(--surface)" : col, stroke: col, "stroke-width": 5 }));
+          stroke: col, "stroke-width": 12, "stroke-linecap": "round", opacity: outer ? 1 : 0.55 }));
+        v.append(svg("circle", { cx: base[0], cy: base[1], r: 13, fill: outer ? col : "var(--surface)", stroke: col, "stroke-width": 5,
+          "stroke-dasharray": piece.kind === "margin" ? "8 6" : null }));
       }
       pic.replaceChildren(v);
       // B's motion relative to A: the camera's shared shift cancels.
@@ -202,11 +216,12 @@
       for (const p of g.overlap) { const q = moveB(p); off = Math.max(off, Math.hypot(q[0] - p[0], q[1] - p[1])); }
       const tol = cfg.TOLERANCE_MM;
       const verdict = off > tol ? el("span", { class: "verdict yes", text: "over tolerance: votes YES" }) : el("span", { class: "verdict no", text: "within tolerance: NO" });
-      const inner = g.pieces.filter((p) => p.kind === "inner").length;
+      const count = (kind) => g.pieces.filter((p) => p.kind === kind).length;
       ro.replaceChildren(
-        el("div", { class: "readout" }, "Relative offset (B vs A): ", el("b", { text: `${num(off, 2)} mm = ${num(off / pitch, 2)} px` }), " ", verdict),
+        el("div", { class: "readout" }, "Relative offset (B vs A): ", el("b", { text: `${num(off, 2)} mm = ${num(off / g.pitch_mm, 2)} px` }), " ", verdict),
         el("div", { class: "readout" }, "Shared camera term: ", el("b", { text: `${num(Math.hypot(...k), 1)} mm` }), " (cancels)"),
-        el("div", { class: "readout" }, "Pieces: ", el("b", { text: `${g.pieces.length - inner} outer, ${inner} inner` }), " · largest n̂·u ", el("b", { text: `${num(maxObs, 2)} mm` })));
+        el("div", { class: "readout" }, "Pieces: ", el("b", { text: `${count("outer")} outer, ${count("inner")} inner${count("margin") ? `, ${count("margin")} margin` : ""}` }),
+          " · largest n̂·u ", el("b", { text: `${num(maxObs, 2)} mm` })));
     }
     draw();
   }
@@ -279,5 +294,5 @@
     draw(6);
   }
 
-  window.Toys = { cepstrumToy, hotspotToy, boundaryToy, decisionToy, toleranceToy, cepstrum, shifted };
+  window.Toys = { cepstrumToy, hotspotToy, boundaryToy, decisionToy, toleranceToy };
 })();

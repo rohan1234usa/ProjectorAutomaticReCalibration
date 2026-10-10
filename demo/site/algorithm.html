@@ -10,19 +10,7 @@
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body data-page="algorithm">
-<header class="site-header">
-  <div class="wrap">
-    <a class="brand" href="index.html"><svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="8" width="16" height="14" rx="2" fill="var(--a)"/><rect x="13" y="10" width="16" height="14" rx="2" fill="var(--b)" fill-opacity=".85"/></svg>Projector drift</a>
-    <nav class="site-nav" aria-label="Pages">
-      <a href="index.html" data-page="index">Overview</a>
-      <a href="samples.html" data-page="samples">Sample data</a>
-      <a href="algorithm.html" data-page="algorithm">Algorithm</a>
-      <a href="tests.html" data-page="tests">Tests</a>
-    </nav>
-    <button class="theme-toggle" type="button" aria-label="Switch theme"></button>
-  </div>
-</header>
-<div class="status-strip"><div class="wrap"></div></div>
+<!-- header -->
 
 <main>
   <section class="hero">
@@ -30,9 +18,11 @@
       <div class="eyebrow">The algorithm</div>
       <h1>How the check will decide</h1>
       <p class="lead">This is the planned detector from the project brief (CLAUDE.md §4), step by step, most trusted
-        first. It is <strong>designed but not built</strong>: building starts with phase 3. The pictures are real simulator frames.
-        Where a figure computes something the detector will compute, it is a teaching illustration, made with the
-        simulator's ground truth at hand, and it is labelled as one.</p>
+        first. It is <strong>designed first and built phase by phase</strong>; the build order's next phase is
+        <span data-v="common.status.next"></span>, <span data-v="common.status.next_title"></span>. The pictures are real
+        simulator frames. Where a figure computes something the detector will compute, it is a teaching illustration, made
+        with the simulator's ground truth at hand, and it is labelled as one.</p>
+      <p class="small muted" id="algorithm-made"></p>
       <svg class="diagram" viewBox="0 0 1000 300" role="img" aria-label="Pipeline: camera frames are rectified and routed; boundary analysis runs every 30 seconds; when it reports a move, or every 15 minutes, the overlap check runs; fusion and a voting decision produce YES or NO.">
         <defs><marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
         <rect class="box" x="0" y="112" width="140" height="76" rx="10"/><text x="70" y="145" text-anchor="middle">Camera frames</text><text class="sub" x="70" y="167" text-anchor="middle">every 0.5 s</text>
@@ -107,13 +97,15 @@
         edges it can see and fits how B has moved <em>relative to A</em>. This works whatever the content, which is why it
         is trusted first.</p>
       <h3 style="margin-top:28px">B's edges move with B; A's stay put</h3>
-      <p>Black frames averaged twelve at a time, before and after B moved 8 px. Each panel is the brightness across one edge,
-        room light removed. The step's position is the edge's position.</p>
+      <p>Black frames averaged <span data-v="algorithm.boundary.count"></span> at a time, before and after B moved
+        <span data-v="algorithm.boundary.size_px"></span> px. Each panel is the brightness across one edge, room light removed.
+        The step's position is the edge's position.</p>
       <div class="multiples" id="raster-edges"></div>
       <h3 style="margin-top:28px">Try it: move B, or knock the camera</h3>
       <p>Each short stroke is one 80 mm edge piece. A piece can only tell how far its own edge moved straight across itself
-        (n̂·u, drawn ×25). Filled dots are outer edges and hollow dots inner ones. Knock the camera and every piece sees
-        motion, yet the relative offset stays at zero.</p>
+        (n̂·u, drawn ×25). Filled dots are outer edges, hollow dots inner ones, and dashed rings edges in the black margin
+        outside the content, where both projectors show black. Knock the camera and every piece sees motion, yet the
+        relative offset stays at zero.</p>
       <div id="boundary-toy"></div>
       <div class="cols" style="margin-top:24px">
         <div>
@@ -163,7 +155,7 @@
       <div id="cepstrum-toy"></div>
       <h4 style="margin-top:24px">On real frames: core tiles minus control tiles</h4>
       <div class="note illustration"><strong>Illustration, not the detector.</strong> Log spectra are pooled over all
-        <span data-v="algorithm.echo.tiles.core"></span> core tiles and <span id="echo-frames"></span> slides shown after B moved, then scored once.
+        <span data-v="algorithm.echo.tiles.core"></span> core tiles and <span data-v="algorithm.echo.frames"></span> slides shown after B moved, then scored once.
         The detector will score each tile and ask the tiles to agree on one smooth motion (phase 6a).</div>
       <div class="grid five" id="cepstrum-panels"></div>
       <details class="more"><summary>Technical details</summary><div class="body">
@@ -193,16 +185,19 @@
         <div>
           <div id="hotspot-map"></div>
           <div id="hotspot-profile" style="margin-top:12px"></div>
-          <p class="small muted">Flat grey on a matte screen. Projector B moved 2 px across, divided by the aligned twin. Measured from the
-            simulator's noiseless frames and from one noisy exposure, with the model drawn on top. Nothing is fitted.</p>
+          <p class="small muted">Flat grey on a matte screen. Projector B moved <span data-v="algorithm.hotspot.size_px"></span> px across,
+            divided by the aligned twin. Measured from the simulator's noiseless frames and from one noisy exposure, with the model
+            drawn on top. Nothing is fitted.</p>
         </div>
         <div id="hotspot-toy"></div>
       </div>
       <details class="more"><summary>Technical details</summary><div class="body">
         <ul>
-          <li>Model: Δr(x) = −∇b(x)·u + (g − 1)·b(x) + trend. Here, exactly: b(x − u) − b(x), diluted by room light and black level to
+          <li>Model: Δr(x) = −∇b(x)·u + (g − 1)·b(x) + trend. Here, exactly: b(D⁻¹(x)) − b(x), with D where B's calibrated
+            picture now lands (x − u for a shift), diluted by room light and black level to
             L / (L + room + 2·black) = <span data-v="algorithm.hotspot.factor" data-fmt="f3"></span>.</li>
-          <li>Measured: a <span data-v="algorithm.hotspot.dip_pct" data-fmt="f3"></span>% dip for <span data-v="algorithm.hotspot.offset_mm" data-fmt="f2"></span> mm,
+          <li>Measured: a <span data-v="algorithm.hotspot.change_pct" data-fmt="f3"></span>% <span data-v="algorithm.hotspot.change"></span>
+            for <span data-v="algorithm.hotspot.offset_mm" data-fmt="f2"></span> mm,
             i.e. <span data-v="algorithm.hotspot.per_px_pct" data-fmt="f3"></span>% per pixel. The brief's planning estimate is 0.40% per pixel without room light.
             Model error over the overlap: <span id="hotspot-rms"></span>.</li>
           <li>Each block's ratio to its flat flanks is compared with the baseline over MIN_SEAM_FRAMES = <span data-v="common.config.values.MIN_SEAM_FRAMES"></span>
@@ -217,7 +212,7 @@
       <div class="cols">
         <div id="border-profile"></div>
         <div><div class="grid small" id="border-crops"></div>
-          <p class="small muted">The bottom edge of the slide inside the overlap, enlarged: aligned, then B moved 4 and 8 px down.</p></div>
+          <p class="small muted">The bottom edge of the slide inside the overlap, enlarged: aligned, then with B moved down by each size.</p></div>
       </div>
     </div>
   </section>
@@ -325,7 +320,6 @@
 <footer class="site-footer"><div class="wrap">Design: CLAUDE.md §4 and docs/research/pseudocode.md. Figures: <code>demo/evidence.py</code> and <code>demo/cepstrum.py</code>.</div></footer>
 
 <script src="data/common.js"></script>
-<script src="data/samples.js"></script>
 <script src="data/algorithm.js"></script>
 <script src="assets/core.js"></script>
 <script src="assets/charts.js"></script>

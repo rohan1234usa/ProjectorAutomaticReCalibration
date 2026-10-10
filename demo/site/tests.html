@@ -10,29 +10,17 @@
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body data-page="tests">
-<header class="site-header">
-  <div class="wrap">
-    <a class="brand" href="index.html"><svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="8" width="16" height="14" rx="2" fill="var(--a)"/><rect x="13" y="10" width="16" height="14" rx="2" fill="var(--b)" fill-opacity=".85"/></svg>Projector drift</a>
-    <nav class="site-nav" aria-label="Pages">
-      <a href="index.html" data-page="index">Overview</a>
-      <a href="samples.html" data-page="samples">Sample data</a>
-      <a href="algorithm.html" data-page="algorithm">Algorithm</a>
-      <a href="tests.html" data-page="tests">Tests</a>
-    </nav>
-    <button class="theme-toggle" type="button" aria-label="Switch theme"></button>
-  </div>
-</header>
-<div class="status-strip"><div class="wrap"></div></div>
+<!-- header -->
 
 <main>
   <section class="hero">
     <div class="wrap">
       <div class="eyebrow">The tests so far</div>
       <h1>What has been proven</h1>
-      <p class="lead">Every phase ends with its tests passing, a dated finding with numbers, and a commit. So far the tests prove the
-        <strong>simulator</strong>. Every number it reports must hold: where light lands, how bright it is, what the camera records,
-        and the ground truth of every frame. The detector will later be scored against exactly that truth. The suite below
-        ran when this site was built.</p>
+      <p class="lead">Every phase ends with its tests passing, a dated finding with numbers, and a commit. The first phases prove the
+        <strong>simulator</strong>: every number it reports must hold: where light lands, how bright it is, what the camera records,
+        and the ground truth of every frame. The detector will later be scored against exactly that truth. The line below
+        says when the suite ran.</p>
       <p class="small muted" id="run-line"></p>
       <div class="kpis" id="test-kpis" style="margin-top:20px"></div>
     </div>

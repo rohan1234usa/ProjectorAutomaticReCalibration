@@ -19,11 +19,13 @@ import cv2
 import numpy as np
 
 from demo import images as im
-from demo.manifest import SHOTS, SIZES, TWIN, across
+from demo.manifest import SHOTS, SIZES
 from demo.overlays import layers
 from demo.renders import Family
+from sim import fiducials
 from sim.dataset import frame_hash
 from sim.planar import apply_h, clip_convex, signed_area
+from sim.truth import coarse_pitch_mm
 
 WIDE = 1600  # whole frames on the pages
 SMALL = 960  # gallery frames
@@ -39,11 +41,16 @@ def display(fam: Family, e: np.ndarray, mode: str) -> np.ndarray:
     return im.log(e, fam.white, fam.black) if mode == "log" else im.natural(e, fam.white)
 
 
+def px_per_mm(h_mm_to_px: np.ndarray, at_mm: np.ndarray) -> float:
+    """Camera pixels per screen millimetre along x at a screen point."""
+    at = np.asarray(at_mm, dtype=np.float64)
+    return float(np.linalg.norm(apply_h(h_mm_to_px, at + [0.5, 0.0]) - apply_h(h_mm_to_px, at - [0.5, 0.0])))
+
+
 def public(facts: dict[str, Any]) -> dict[str, Any]:
     """The facts a caption shows (numbers rounded, no matrices)."""
-    return {"variant": facts["variant"], "frame": facts["frame"], "t_s": facts["t_s"], "tag": facts["tag"],
-            "offset_mm": round(facts["offset_mm"], 4), "offset_px": round(facts["offset_px"], 4),
-            "aligned": facts["aligned"], "ambient": facts["ambient"],
+    return {"frame": facts["frame"], "t_s": facts["t_s"], "tag": facts["tag"],
+            "offset_mm": round(facts["offset_mm"], 4), "aligned": facts["aligned"], "ambient": facts["ambient"],
             "lamp": {k: round(v, 4) for k, v in facts["lamp"].items()}, "camera_bump": facts["camera_bump"],
             "people": facts["people"], "markers_visible": len(facts["markers_visible"])}
 
@@ -65,59 +72,93 @@ def frame(out: Path, fam: Family, name: str, variant: str, i: int, mode: str = "
     e = fam.electrons(variant, i) if e is None else e
     facts = fam.facts(variant, i)
     fig = {"img": save(out, name, im.shrink(display(fam, e, mode), width)), "facts": public(facts),
-           "layers": layers(fam, facts), "mode": mode}
+           "layers": layers(fam, facts)}
     if log_too:
         fig["img_log"] = save(out, name + "_log", im.shrink(display(fam, e, "log"), width))
     return fig
 
 
+def installation(fam: Family) -> dict[str, Any]:
+    """The installation's numbers, read from the scenario, for the page's technical details."""
+    scenario = fam.scenarios[fam.base]
+    scene, setup, timing = fam.scene, fam.scene.setup, scenario.timing
+    a, b = setup.box_mm("a"), setup.box_mm("b")
+    overlap = setup.overlap()
+    onsets = [p.schedule.onset for s in fam.scenarios.values() for p in s.perturbations if p.schedule.onset is not None]
+    projector = scene.projectors["a"]
+    return {
+        "reflectance": scene.screen.reflectance, "ambient": scene.screen.ambient, "bezel_mm": scene.screen.bezel.width_mm,
+        "markers": len(scene.markers.centres_mm), "marker_mm": scene.markers.size_mm, "dictionary": fiducials.DICTIONARY,
+        "projector_px": list(setup.resolution["a"]), "image_mm": round(float(np.hypot(*(a[1] - a[0]))), 1),
+        "pitch_mm": round(coarse_pitch_mm(setup), 4), "overlap_mm": round(float(np.ptp(overlap[:, 0])), 1),
+        "b_lower_mm": round(float(b[0, 1] - a[0, 1]), 2), "blend": setup.blend_shape,
+        "black_ratio": round(1.0 / projector.black_level), "camera_margin": scenario.data["camera"].get("margin"),
+        "camera_keystone": scenario.data["camera"].get("keystone"),
+        "camera_px_per_mm": round(px_per_mm(scene.camera.h_mm_to_px, overlap.mean(axis=0)), 3),
+        "exposure_s": float(timing.exposure), "sample_every_s": float(timing.sample_every),
+        "trusted_window_s": float(timing.trusted_window), "onset_s": float(min(onsets)) if onsets else None,
+    }
+
+
 def textured_windows(e: np.ndarray, overlap_px: np.ndarray, count: int = 2) -> list[tuple[int, int, int, int]]:
-    """The `count` most textured CROP-sized windows centred on the overlap, not overlapping each other."""
-    u_mid = int(round(overlap_px[:, 0].mean()))
-    v_lo, v_hi = int(overlap_px[:, 1].min()) + 8, int(overlap_px[:, 1].max()) - 8 - CROP
-    lap = np.abs(cv2.Laplacian(e.astype(np.float32), cv2.CV_32F))
-    scored = sorted(((float(lap[v : v + CROP, u_mid - CROP // 2 : u_mid + CROP // 2].mean()), v)
-                     for v in range(v_lo, v_hi, 10)), reverse=True)
+    """The `count` most textured CROP-sized windows centred on the overlap, along its long axis, apart."""
+    lo, hi = overlap_px.min(axis=0), overlap_px.max(axis=0)
+    axis = 1 if hi[1] - lo[1] >= hi[0] - lo[0] else 0  # scan down a tall overlap, across a wide one
+    mid = int(round(overlap_px[:, 1 - axis].mean()))
+
+    def window(s: int) -> tuple[int, int, int, int]:
+        return (mid - CROP // 2, s, mid + CROP // 2, s + CROP) if axis else (s, mid - CROP // 2, s + CROP, mid + CROP // 2)
+
+    lap = np.abs(cv2.Laplacian(np.asarray(e, dtype=np.float32), cv2.CV_32F))
+    scored = sorted(((float(im.crop(lap, window(s)).mean()), s)
+                     for s in range(int(lo[axis]) + 8, int(hi[axis]) - 8 - CROP, 10)), reverse=True)
     chosen: list[int] = []
-    for _, v in scored:
-        if all(abs(v - c) >= CROP for c in chosen):
-            chosen.append(v)
+    for _, s in scored:
+        if all(abs(s - c) >= CROP for c in chosen):
+            chosen.append(s)
         if len(chosen) == count:
             break
-    return [(u_mid - CROP // 2, v, u_mid + CROP // 2, v + CROP) for v in sorted(chosen)]
+    return [window(s) for s in sorted(chosen)]
 
 
 def shift_series(out: Path, fam: Family) -> dict[str, Any]:
     """From invisible to obvious: B moved 0 ... 8 px across, the same slide, the same noise."""
-    i = SHOTS["shift_0"].frame
-    twin = fam.electrons(TWIN, i)
-    base = fam.facts(TWIN, i)
+    shots = {s: SHOTS[f"shift_{s}"] for s in SIZES}
+    along = SHOTS["shift_along_8"]
+    twin_shot = shots[SIZES[0]]
+    i = twin_shot.frame
+    if twin_shot.moved or any(s.frame != i for s in (*shots.values(), along)):
+        raise ValueError("shift_series: every step must show the same frame, the first one aligned")
+    twin = fam.electrons(twin_shot.variant, i)
+    base = fam.facts(twin_shot.variant, i)
     overlap_px = apply_h(base["camera_h"], clip_convex(base["boxes_mm"]["a"], base["boxes_mm"]["b"]))
     windows = textured_windows(twin, overlap_px)
     scale = 0.25 * fam.white  # the difference that shows at full colour
     dim = (im.natural(twin, fam.white) * 0.35).astype(np.uint8)
     dim = im.shrink(dim, dim.shape[1] // 2)
+    b_then = mask(fam, base["boxes_mm"]["b"], base["camera_h"])
 
     def step(key: str, variant: str) -> dict[str, Any]:
-        e = twin if variant == TWIN else fam.electrons(variant, i)
+        e = fam.electrons(variant, i)
         facts = fam.facts(variant, i)
         diff = np.abs(e - twin)
-        b_either = mask(fam, base["boxes_mm"]["b"], base["camera_h"]) | mask(fam, facts["boxes_mm"]["b"], facts["camera_h"])
+        b_either = b_then | mask(fam, facts["boxes_mm"]["b"], facts["camera_h"])
         b_either = cv2.dilate(b_either.astype(np.uint8), np.ones((21, 21), np.uint8)).astype(bool)  # and its blur
         a_only = mask(fam, facts["boxes_mm"]["a"], facts["camera_h"], 3) & ~b_either  # A alone in both frames
         alpha = np.sqrt(np.clip(im.shrink_max(diff, 2) / scale, 0.0, 1.0))
-        view = im.natural(e, fam.white)
-        return {"variant": variant, "offset_mm": round(facts["offset_mm"], 4),
-                "offset_px": round(facts["offset_px"], 4),
-                "crops": [save(out, f"{key}_crop{n}", im.crop(view, w), "png") for n, w in enumerate(windows)],
+        return {"offset_mm": round(facts["offset_mm"], 4), "offset_px": round(facts["offset_px"], 4),
+                "crops": [save(out, f"{key}_crop{n}", im.natural(im.crop(e, w), fam.white), "png")
+                          for n, w in enumerate(windows)],
                 "diff": save(out, f"{key}_diff", im.tint(dim, alpha, (134, 182, 239))),
-                "a_only_max_e": round(float(diff[a_only].max()), 3), "max_e": round(float(diff.max()), 1)}
+                "a_only_max_e": round(float(diff[a_only].max()), 3)}
 
-    steps = [{"size_px": float(s), **step(f"shift_{s}", across(s) if s != "0" else TWIN)} for s in SIZES]
-    along = {"size_px": 8.0, **step("shift_along_8", SHOTS["shift_along_8"].variant)}
-    return {"frame": i, "t_s": base["t_s"], "steps": steps, "along": along, "windows": windows,
-            "diff_scale_e": round(scale, 1), "white_e": round(fam.white, 1), "overlap_px": overlap_px.round(1).tolist(),
-            "frame_size": list(fam.scene.camera.resolution)}
+    steps = [{"size_px": float(s), **step(f"shift_{s}", shot.variant)} for s, shot in shots.items()]
+    biggest = steps[-1]
+    moved_along = step("shift_along_8", along.variant)
+    return {"frame": i, "t_s": base["t_s"], "steps": steps,
+            "along": {"size_px": round(moved_along["offset_px"], 2), **moved_along},
+            "diff_scale_e": round(scale, 1), "a_only_max_e": max(s["a_only_max_e"] for s in steps),
+            "hero": {"size_px": biggest["size_px"], "offset_mm": biggest["offset_mm"], "moved": biggest["crops"][0]}}
 
 
 def blend_map(out: Path, fam: Family, name: str, step_mm: float = 4.0) -> dict[str, Any]:
@@ -131,8 +172,8 @@ def blend_map(out: Path, fam: Family, name: str, step_mm: float = 4.0) -> dict[s
     img[lit] = w["a"][lit, None] * np.float64(im.A) + w["b"][lit, None] * np.float64(im.B)
     img = np.rint(img).astype(np.uint8)
     overlap = setup.overlap()
-    return {**save(out, name, img, "png"), "screen_mm": [float(sw), float(sh)],
-            "overlap_m2": round(abs(signed_area(overlap)) / 1e6, 3), "overlap_vertices": len(overlap)}
+    return {**save(out, name, img, "png"), "overlap_m2": round(abs(signed_area(overlap)) / 1e6, 3),
+            "overlap_vertices": len(overlap)}
 
 
 def content_item(out: Path, fam: Family, key: str, label: str, intended: str, cfg: dict[str, Any]) -> dict[str, Any]:
@@ -146,14 +187,14 @@ def content_item(out: Path, fam: Family, key: str, label: str, intended: str, cf
     shot = SHOTS[key]
     i = shot.frame
     e = fam.electrons(shot.variant, i)
-    dark = intended == "dark" or shot.tag in ("black", "dark", "video_dark")
-    fig = frame(out, fam, f"content_{key}", shot.variant, i, "log" if dark else "natural", SMALL, e=e)
+    mode = "log" if intended == "dark" or shot.tag in ("black", "dark", "video_dark") else "natural"
     facts = fam.facts(shot.variant, i)
     inside = mask(fam, clip_convex(facts["boxes_mm"]["a"], facts["boxes_mm"]["b"]), facts["camera_h"], 4)
     room = fam.room(shot.variant, i)
-    fig.update({"key": key, "label": label, "intended": intended,
-                "overlap_mean": round(float(e[inside].mean() / fam.white), 5),
-                "overlap_mean_net": round(float((e - room)[inside].mean() / fam.white), 5)})
+    fig = {"label": label, "intended": intended, "mode": mode,
+           "img": save(out, f"content_{key}", im.shrink(display(fam, e, mode), SMALL)),
+           "overlap_mean": round(float(e[inside].mean() / fam.white), 5),
+           "overlap_mean_net": round(float((e - room)[inside].mean() / fam.white), 5)}
     if intended == "skip" or shot.tag == "video_dark":
         before = fam.electrons(shot.variant, i - 1)
         fig["motion"] = round(float(np.abs(e - before).mean() / fam.white), 5)

@@ -25,18 +25,37 @@ def slug(text: str) -> str:
     return "-".join(words)[:80] or "section"
 
 
+def _href(url: str) -> str | None:
+    """A link target made safe for an attribute: web, mail and relative links only."""
+    url = html.unescape(url)  # the text around it was escaped already: undo that once
+    scheme = re.match(r"([A-Za-z][A-Za-z0-9+.-]*):", url)
+    if scheme and scheme.group(1).lower() not in ("http", "https", "mailto"):
+        return None  # e.g. javascript: never becomes a link
+    return html.escape(url, quote=True)
+
+
+def _link(m: re.Match) -> str:
+    href = _href(m.group(2))
+    return f'<a href="{href}">{m.group(1)}</a>' if href else m.group(1)
+
+
 def inline(text: str) -> str:
-    """Inline markup: `code`, **bold**, *italic*, [links](url); everything else escaped."""
-    out = []
-    for part in re.split(r"(`[^`]+`)", text):
-        if len(part) >= 2 and part[0] == part[-1] == "`":
-            out.append(f"<code>{html.escape(part[1:-1], quote=False)}</code>")
-            continue
-        s = html.escape(part, quote=False)
-        s = _LINK.sub(lambda m: f'<a href="{html.escape(m.group(2))}">{m.group(1)}</a>', s)
-        s = _BOLD.sub(r"<strong>\1</strong>", s)
-        out.append(_EM.sub(r"<em>\1</em>", s))
-    return "".join(out)
+    """Inline markup: `code`, **bold**, *italic*, [links](url); everything else escaped.
+
+    Code spans are set aside first and put back last, so bold or italic around a code span
+    still pairs up, and nothing inside a code span is read as markup.
+    """
+    spans: list[str] = []
+
+    def stash(m: re.Match) -> str:
+        spans.append(f"<code>{html.escape(m.group(1), quote=False)}</code>")
+        return f"\x00{len(spans) - 1}\x00"
+
+    s = html.escape(re.sub(r"`([^`]+)`", stash, text), quote=False)
+    s = _LINK.sub(_link, s)
+    s = _BOLD.sub(r"<strong>\1</strong>", s)
+    s = _EM.sub(r"<em>\1</em>", s)
+    return re.sub("\x00(\\d+)\x00", lambda m: spans[int(m.group(1))], s)
 
 
 def _indent(line: str) -> int:

@@ -29,21 +29,26 @@
   }
   const get = (path, root = D) => path.split(".").reduce((o, k) => (o == null ? undefined : o[k]), root);
 
+  const formatters = new Map(); // one Intl.NumberFormat per number of decimals: building one is slow
   const num = (v, d = 2) => {
     if (v == null || Number.isNaN(v)) return "–";
-    const x = Math.abs(v) < 0.5 * 10 ** -d ? 0 : Number(v); // never "-0.00"
-    return x.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+    if (!formatters.has(d)) formatters.set(d, new Intl.NumberFormat("en-US", { minimumFractionDigits: d, maximumFractionDigits: d }));
+    return formatters.get(d).format(Math.abs(v) < 0.5 * 10 ** -d ? 0 : Number(v)); // never "-0.00"
   };
-  const int = (v) => (v == null ? "–" : Math.round(v).toLocaleString("en-US"));
-  const pct = (v, d = 2) => (v == null ? "–" : `${num(100 * v, d)}%`);
+  const int = (v) => (v == null ? "–" : num(Math.round(v), 0));
   const formats = {
     int, f0: (v) => num(v, 0), f1: (v) => num(v, 1), f2: (v) => num(v, 2), f3: (v) => num(v, 3), f4: (v) => num(v, 4),
-    pct1: (v) => pct(v, 1), pct2: (v) => pct(v, 2), pct3: (v) => pct(v, 3), text: (v) => String(v),
-    list: (v) => (Array.isArray(v) ? v.join(", ") : String(v)),
+    text: (v) => String(v), list: (v) => (Array.isArray(v) ? v.join(", ") : String(v)),
+    dims: (v) => (Array.isArray(v) ? v.join(" × ") : String(v)), // a width and a height
     date: (v) => String(v).slice(0, 10),
     duration: (s) => (s >= 3600 ? `${num(s / 3600, 1)} h` : s >= 60 ? `${num(s / 60, 0)} min` : `${num(s, 0)} s`),
+    percent: (v) => `${num(100 * v, Number.isInteger(Math.round(1e6 * v) / 1e4) ? 0 : 1)}%`,
+    reciprocal: (v) => `1/${num(1 / v, 0)}`, // an exposure of 1/30 s
   };
-  const fmt = (v, f) => (v === undefined ? "–" : (formats[f] || formats.text)(v));
+  const fmt = (v, f) => (v === undefined || v === null ? "–" : (formats[f] || formats.text)(v));
+
+  /* Where a data file came from: "on 2026-10-10 from 6847206 (with uncommitted changes)". */
+  const provenance = (meta) => (meta ? `on ${fmt(meta.built, "date")} from ${meta.commit || "?"}${meta.dirty ? " (with uncommitted changes)" : ""}` : "");
 
   /* Theme: OS preference by default; the toggle stores an explicit choice. */
   function effectiveTheme() {
@@ -78,19 +83,18 @@
     for (const a of $$(".site-nav a")) if (a.dataset.page === page) a.setAttribute("aria-current", "page");
   }
 
+  /* The status strip: what CLAUDE.md's build order says is done and what is next. */
   function initStatus() {
     const box = $(".status-strip .wrap");
     const c = D.common;
     if (!box || !c) return;
-    const done = c.phases.filter((p) => p.state === "done");
-    const next = c.phases.find((p) => p.state === "next");
-    const env = c.env || {};
+    const st = c.status;
     box.replaceChildren(
-      el("span", {}, el("span", { class: "dot done" }), el("strong", { text: "Built: " }),
-        `the simulator (phases ${done.map((p) => p.number).join(", ")})`),
-      next ? el("span", {}, el("span", { class: "dot next" }), el("strong", { text: "Next: " }),
-        `phase ${next.number}, ${next.title.toLowerCase()}. The detector itself is not built yet.`) : null,
-      el("span", { class: "muted" }, `Site built ${fmt(env.built, "date")} from ${env.short || "?"}${env.dirty ? " (with uncommitted changes)" : ""}`)
+      el("span", {}, el("span", { class: "dot done" }), el("strong", { text: "Done: " }),
+        `phases ${st.done.join(", ")} of ${st.total}`),
+      st.next ? el("span", {}, el("span", { class: "dot next" }), el("strong", { text: "Next: " }),
+        `phase ${st.next}, ${st.next_title.toLowerCase()}`) : null,
+      el("span", { class: "muted" }, `Site built ${provenance(c.meta)}`)
     );
   }
 
@@ -119,6 +123,13 @@
   });
 
   /* ---- Components ------------------------------------------------------------------------- */
+  /* A picture in a frame: {src, w, h} as the data files give it. opts: {pixelated, eager, tag, zoom (default true)}. */
+  function framedImg(img, alt, opts = {}) {
+    const cls = [opts.pixelated ? "pixelated" : "", opts.zoom === false ? "" : "zoomable"].filter(Boolean).join(" ");
+    return el("div", { class: "frame" }, el("img", { src: img.src, width: img.w, height: img.h, alt, class: cls || null, loading: opts.eager ? null : "lazy" }),
+      opts.tag ? el("span", { class: "tag", text: opts.tag }) : null);
+  }
+
   const LAYERS = [
     { key: "a", label: "Box A", color: "var(--a)", on: true },
     { key: "b", label: "Box B", color: "var(--b)", on: true },
@@ -252,7 +263,7 @@
     if (target) requestAnimationFrame(() => target.scrollIntoView());
   }
 
-  window.Demo = { D, $, $$, el, svg, get, fmt, num, int, pct, fillValues, lightbox, overlayFigure, overlaySvg, segmented, compare, jsonView, effectiveTheme, restoreHash };
+  window.Demo = { D, $, $$, el, svg, get, fmt, num, int, provenance, fillValues, framedImg, overlayFigure, overlaySvg, segmented, compare, jsonView, restoreHash };
 
   document.addEventListener("DOMContentLoaded", () => {
     initTheme();

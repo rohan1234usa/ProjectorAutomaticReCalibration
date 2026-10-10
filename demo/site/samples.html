@@ -10,19 +10,7 @@
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body data-page="samples">
-<header class="site-header">
-  <div class="wrap">
-    <a class="brand" href="index.html"><svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="8" width="16" height="14" rx="2" fill="var(--a)"/><rect x="13" y="10" width="16" height="14" rx="2" fill="var(--b)" fill-opacity=".85"/></svg>Projector drift</a>
-    <nav class="site-nav" aria-label="Pages">
-      <a href="index.html" data-page="index">Overview</a>
-      <a href="samples.html" data-page="samples">Sample data</a>
-      <a href="algorithm.html" data-page="algorithm">Algorithm</a>
-      <a href="tests.html" data-page="tests">Tests</a>
-    </nav>
-    <button class="theme-toggle" type="button" aria-label="Switch theme"></button>
-  </div>
-</header>
-<div class="status-strip"><div class="wrap"></div></div>
+<!-- header -->
 
 <main>
   <section class="hero">
@@ -33,8 +21,7 @@
         locked 16-bit camera, shrunk for the web. Each comes with its <strong>ground truth</strong>: where each projector's
         light really lands and how far apart the two put the same content. The detector will never see that truth; it is
         drawn on top here so you can tell a projector's edge from an edge in the content.</p>
-      <p class="small muted">Rendered at <span data-v="common.build.samples"></span> quality when this site was built.
-        Click any picture to enlarge it.</p>
+      <p class="small muted"><span id="samples-made"></span> Click any picture to enlarge it.</p>
     </div>
   </section>
 
@@ -52,12 +39,25 @@
       <div class="wrap" style="padding:0">
         <details class="more"><summary>Technical details</summary><div class="body">
           <ul>
-            <li>Screen <span data-v="samples.inputs.setup.screen.size_mm" data-fmt="list"></span> mm, 0.9 reflectance, room light
-              0.02 of projector white (a dim lecture hall), a 150 mm bezel with 8 ArUco markers (DICT_4X4_50, 80 mm).</li>
-            <li>Two 1920 × 1080 projectors, each image 2000 mm wide (1.04 mm per pixel); a 410 mm overlap; B sits 0.3 mm lower so
-              the two pixel grids never line up. Cosine blend in linear light; black level 1/1500 of white.</li>
-            <li>Camera <span data-v="samples.inputs.setup.camera.resolution" data-fmt="list"></span> px, mono, 16-bit linear, whole screen
-              plus a 5% margin with a 2% keystone (about 0.87 camera px per mm); exposure 1/30 s; one frame every 0.5 s.</li>
+            <li>Screen <span data-v="samples.inputs.setup.screen.size_mm" data-fmt="dims"></span> mm,
+              <span data-v="samples.installation.about.reflectance"></span> reflectance, room light
+              <span data-v="samples.installation.about.ambient"></span> of projector white (a dim lecture hall), a
+              <span data-v="samples.installation.about.bezel_mm" data-fmt="f0"></span> mm bezel with
+              <span data-v="samples.installation.about.markers"></span> ArUco markers
+              (<span data-v="samples.installation.about.dictionary"></span>, <span data-v="samples.installation.about.marker_mm" data-fmt="f0"></span> mm).</li>
+            <li>Two <span data-v="samples.installation.about.projector_px" data-fmt="dims"></span> px projectors, each image
+              <span data-v="samples.installation.about.image_mm" data-fmt="f0"></span> mm wide
+              (<span data-v="samples.installation.about.pitch_mm" data-fmt="f3"></span> mm per pixel); a
+              <span data-v="samples.installation.about.overlap_mm" data-fmt="f0"></span> mm overlap; B sits
+              <span data-v="samples.installation.about.b_lower_mm" data-fmt="f1"></span> mm lower so the two pixel grids never line up.
+              The blend is <span data-v="samples.installation.about.blend"></span>, in linear light; black level
+              1/<span data-v="samples.installation.about.black_ratio"></span> of white.</li>
+            <li>Camera <span data-v="samples.inputs.setup.camera.resolution" data-fmt="dims"></span> px, mono, 16-bit linear, whole screen
+              plus a <span data-v="samples.installation.about.camera_margin" data-fmt="percent"></span> margin with a
+              <span data-v="samples.installation.about.camera_keystone" data-fmt="percent"></span> keystone (about
+              <span data-v="samples.installation.about.camera_px_per_mm" data-fmt="f2"></span> camera px per mm); exposure
+              <span data-v="samples.installation.about.exposure_s" data-fmt="reciprocal"></span> s; one frame every
+              <span data-v="samples.installation.about.sample_every_s"></span> s.</li>
             <li>Toggle <em>shadows boosted</em> to see the frame through a log curve: the faint glow of each projector's black level
               around the picture becomes visible.</li>
           </ul>
@@ -96,11 +96,12 @@
       <div class="readouts" id="shift-readouts"></div>
       <details class="more"><summary>Technical details</summary><div class="body">
         <p>Scenario <code>shift_sweep</code>, frame <span data-v="samples.shift.frame"></span> (t = <span data-v="samples.shift.t_s" data-fmt="f1"></span> s):
-          B moved at 615 s, after the 600 s trusted window. One projector pixel is
+          B moved at <span data-v="samples.timelines.shift.onset_s" data-fmt="f0"></span> s, after the
+          <span data-v="samples.timelines.shift.trusted_window_s" data-fmt="f0"></span> s trusted window. One projector pixel is
           <span data-v="samples.timelines.shift.pitch_mm" data-fmt="f4"></span> mm. The difference map shows |frame − aligned twin| at full colour
           from <span data-v="samples.shift.diff_scale_e" data-fmt="int"></span> electrons (a quarter of one projector's white), on a dimmed copy of the frame.</p>
         <p>Where A shines alone the difference is exactly zero: the largest change there is
-          <span data-v="samples.shift.steps.6.a_only_max_e" data-fmt="f1"></span> electrons. Where B shines alone, B's whole picture moved:
+          <span data-v="samples.shift.a_only_max_e" data-fmt="f1"></span> electrons, at any size. Where B shines alone, B's whole picture moved:
           nobody can see that, because nothing there is compared with anything. It shows only in the overlap, and at B's outer edge.</p>
       </div></details>
     </div>
@@ -147,20 +148,21 @@
       <h2>What the camera sees in the dark</h2>
       <p class="lead">A projector's black still leaks a little light, about 1/1500 of its white. In a black frame that leak
         outlines each projector's full box, even the edges hidden under the other projector, and the overlap glows twice
-        as bright. It is faint, about <span data-v="algorithm.dark.black_e" data-fmt="f0"></span> electrons on top of
-        <span data-v="algorithm.dark.room_e" data-fmt="int"></span> from the room light. Averaging frames brings it out.</p>
+        as bright. It is faint, about <span data-v="samples.dark.black_e" data-fmt="f0"></span> electrons on top of
+        <span data-v="samples.dark.room_e" data-fmt="int"></span> from the room light. Averaging frames brings it out.</p>
       <div class="controls" id="dark-controls"></div>
       <div id="dark-fig"></div>
-      <p class="figcap">Room light removed, then stretched from <span data-v="algorithm.dark.stretch_e.0"></span> to
-        <span data-v="algorithm.dark.stretch_e.1"></span> electrons. Frames <span data-v="algorithm.dark.frames.0"></span>–<span data-v="algorithm.dark.frames.11"></span>
+      <p class="figcap">Room light removed, then stretched from <span data-v="samples.dark.stretch_e.0"></span> to
+        <span data-v="samples.dark.stretch_e.1"></span> electrons. Frames <span data-v="samples.dark.first"></span>–<span data-v="samples.dark.last"></span>
         of <code>shift_sweep</code>, during its black interlude.</p>
       <div id="dark-profile" style="margin-top:20px"></div>
       <details class="more"><summary>Technical details</summary><div class="body">
-        <p>Per-pixel noise is <span data-v="algorithm.dark.noise_e.single" data-fmt="f1"></span> electrons in one frame and
-          <span data-v="algorithm.dark.noise_e.mean" data-fmt="f1"></span> in the mean of twelve; the profile averages along the screen's
-          height as well. Levels in the mean: unlit <span data-v="algorithm.dark.levels.unlit" data-fmt="f1"></span>,
-          A only <span data-v="algorithm.dark.levels.A only" data-fmt="f1"></span>, overlap <span data-v="algorithm.dark.levels.overlap" data-fmt="f1"></span>,
-          B only <span data-v="algorithm.dark.levels.B only" data-fmt="f1"></span> electrons. This is the raw material of
+        <p>Per-pixel noise is <span data-v="samples.dark.noise_e.single" data-fmt="f1"></span> electrons in one frame and
+          <span data-v="samples.dark.noise_e.mean" data-fmt="f1"></span> in the mean of <span data-v="samples.dark.count"></span>; the profile
+          averages along the screen's height as well. Levels in the mean, at the middle of each region: unlit
+          <span data-v="samples.dark.levels.unlit" data-fmt="f1"></span>, A only <span data-v="samples.dark.levels.A only" data-fmt="f1"></span>,
+          overlap <span data-v="samples.dark.levels.overlap" data-fmt="f1"></span>, B only <span data-v="samples.dark.levels.B only" data-fmt="f1"></span>
+          electrons. This is the raw material of
           <a href="algorithm.html#boundary">boundary analysis</a>.</p>
       </div></details>
     </div>
@@ -184,10 +186,11 @@
       <p class="lead">A <strong>gain screen</strong> sends more light back in one direction, so each projector shows a
         hotspot where its light reflects toward the camera, and the overlap falls between the two. That fixed shading must
         not pass for misalignment. A <strong>zoomed camera</strong> sees only the overlap, its control strips and four markers,
-        at twice the resolution.</p>
+        at <span data-v="samples.zoomed.px_per_mm" data-fmt="f2"></span> camera pixels per mm instead of
+        <span data-v="samples.installation.about.camera_px_per_mm" data-fmt="f2"></span>.</p>
       <div class="cols" style="margin-top:16px">
         <figure class="fig"><div id="gain-matte"></div><figcaption>Matte screen, flat grey.</figcaption></figure>
-        <figure class="fig"><div id="gain-peak"></div><figcaption>Gain screen, peak 2.4, same frame. Crosses mark each projector's hotspot.</figcaption></figure>
+        <figure class="fig"><div id="gain-peak"></div><figcaption id="gain-peak-cap"></figcaption></figure>
       </div>
       <div id="gain-profile" style="margin-top:16px"></div>
       <div class="cols" style="margin-top:32px">
@@ -195,7 +198,7 @@
         <div>
           <h3>Zoomed camera</h3>
           <p>At <span data-v="samples.zoomed.px_per_mm" data-fmt="f2"></span> camera px per mm the doubling is plain to see. Here is the same
-            window aligned and with B moved 8 px:</p>
+            window at each shift:</p>
           <div class="cols" id="zoomed-crops"></div>
           <p class="small muted">The sensor is turned 90° for a vertical overlap; frames are turned back here.</p>
         </div>
@@ -257,7 +260,6 @@
 
 <script src="data/common.js"></script>
 <script src="data/samples.js"></script>
-<script src="data/algorithm.js"></script>
 <script src="assets/core.js"></script>
 <script src="assets/charts.js"></script>
 <script src="assets/page-samples.js"></script>

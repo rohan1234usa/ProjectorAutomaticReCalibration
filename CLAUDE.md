@@ -197,15 +197,16 @@ eval/
   metrics.py            # detection rate vs offset, FPR, latency, availability, per-type confusion
   sweep.py              # run the detector over datasets with threshold sweeps
   report.py             # CSV + PNG plots + per-scenario diagnostic images + report.md
-demo/                   # static demo site: sample data, the planned algorithm, the tests so far; uses sim/, never detector/ [done]
+demo/                   # static demo site: sample data, the planned algorithm, the tests so far; uses sim/ (+ scripts/visualize.py), never detector/ [done]
   manifest.py           # which frames the pages show, re-checked against the scenarios without rendering [done]
   renders.py            # one FrameSource per scenario family, shared by sweep variants that differ only in perturbation [done]
   figures.py, gallery.py  # sample-data figures with their true geometry; overlays.py draws it [done]
+  samples.py            # renders every figure, one renderer at a time, into the pages' data              [done]
   evidence.py, cepstrum.py  # algorithm illustrations, made with ground truth and labelled as teaching only [done]
   timelines.py          # truth over time from states, no render                                  [done]
   sources.py, markdown.py, testrun.py  # CLAUDE.md, findings.md, detector.yaml (as text) and the pytest run [done]
   site.py, serve.py, images.py  # assemble out/site safely, serve on 127.0.0.1, display curves  [done]
-  site/                 # the hand-written pages, CSS and JS; data arrives as data/*.js           [done]
+  site/                 # the hand-written pages (one shared header), CSS and JS; data arrives as data/*.js, each stamped with its build [done]
 scenarios/              # YAML scenario files (one per test idea; adding a test = adding a file); _lecture_hall.yaml is the shared base
 scripts/
   make_dataset.py       # python -m scripts.make_dataset scenarios/xxx.yaml out/xxx [--frames all|sample|none]  [done]
@@ -230,8 +231,10 @@ Hard rules:
   `tests/test_imports.py` enforces both.
 - The harness (`eval/`, `scripts/`) is the only place the two meet. `eval/feed.py` is the
   only module that turns simulator output into detector input.
-- The demo site (`demo/`) uses `sim/` and never `detector/`; it reads `detector.yaml` as text.
-  Neither package imports `demo/`. `tests/test_imports.py` enforces all three. Detector output
+- The demo site (`demo/`) uses `sim/` and the harness helper `scripts/visualize.py`, never
+  `detector/`; it reads `detector.yaml` as text.
+  Neither package imports `demo/`. `tests/test_imports.py` enforces all three, and checks what
+  importing the demo loads, so a helper cannot bring `detector/` in. Detector output
   shown on the site will come from the harness's results, never from importing `detector/`.
 - The detector never sees ground truth.
 

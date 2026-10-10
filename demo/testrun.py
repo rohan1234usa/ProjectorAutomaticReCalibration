@@ -32,7 +32,7 @@ AREAS = {
     "Nuisances": ("test_nuisance",),
     "Scenarios and datasets": ("test_scenario", "test_catalogue", "test_frames", "test_dataset",
                                "test_check_dataset", "test_compare"),
-    "Contracts and tools": ("test_config", "test_imports", "test_visualize", "test_demo"),
+    "Contracts and tools": ("test_config", "test_imports", "test_visualize", "test_demo", "test_demo_build"),
 }
 
 
@@ -107,6 +107,7 @@ def run(repo: Path, junit: Path, mode: str) -> dict[str, Any]:
         collected, _ = _pytest(repo, "--collect-only", "-m", "slow")  # addopts' -q already lists one test per line
         not_run = [line.strip() for line in collected.stdout.splitlines() if "::" in line]
     return {"mode": mode, "command": f"python -m pytest -m '{MARKERS[mode]}'", "returncode": proc.returncode,
+            "python": sys.version.split()[0],
             "wall_s": round(wall, 1), "summary": lines[-1] if lines else "", "slow_not_run": not_run,
             "stderr_tail": proc.stderr[-2000:] if proc.returncode not in (0, 1) else ""}
 

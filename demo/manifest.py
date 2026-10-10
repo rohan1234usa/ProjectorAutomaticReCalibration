@@ -10,7 +10,7 @@ rendering, a few milliseconds -- and lists every mismatch. The build stops on an
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from sim.scenario import Scenario, load_scenarios
@@ -55,7 +55,6 @@ class Shot:
     straddle: bool | None = None  # the exposure holds two pictures
     distinct: bool = False  # every frame shows a different picture
     tag_prefix: str | None = None  # every picture's tag starts with this
-    notes: dict = field(default_factory=dict)
 
     @property
     def frame(self) -> int:
@@ -81,7 +80,7 @@ SHOTS: dict[str, Shot] = {
     "stripes": Shot("repetition_limit", "magnitude_mm=0", (30,), tag="stripes", moved=False),
     "letterbox": Shot("boundary_hidden", "magnitude_px=0", (20,), tag="photo_letterbox", moved=False),
     "blank_overlap": Shot("blank_band", "magnitude_px=0", (20,), tag="photo_blank", moved=False),
-    "flat": Shot("gain_screen", "peak=1__magnitude_px=0", (400,), tag="flat", moved=False),
+    "flat": Shot("gain_screen", "peak=1__magnitude_px=0", (400,), tag="flat", moved=False),  # also the matte twin
     "black": Shot(SHIFT, TWIN, (375,), tag="black", moved=False),
     "dark_before": Shot(SHIFT, TWIN, tuple(range(371, 383)), tag="black", moved=False),
     "dark_after_twin": Shot(SHIFT, TWIN, tuple(range(1517, 1529)), tag="black", moved=False),
@@ -100,7 +99,6 @@ SHOTS: dict[str, Shot] = {
     "sharpening_during": Shot(NUISANCE, "nuisances=sharpening", (1828,)),
     "all_before": Shot(NUISANCE, ALL_NUISANCES, (1828,), bumped=False, ambient=0.02, lamp_b=1.0, people=False),
     "all_during": Shot(NUISANCE, ALL_NUISANCES, (2638,), bumped=True, ambient=0.05, lamp_b=0.85, people=True),
-    "gain_matte": Shot("gain_screen", "peak=1__magnitude_px=0", (400,), tag="flat", moved=False),
     "gain_peak": Shot("gain_screen", "peak=2.4__magnitude_px=0", (400,), tag="flat", moved=False),
     "zoomed_0": Shot("camera_zoomed", "magnitude_px=0", (1300,), tag="deck_high", moved=False),
     "zoomed_8": Shot("camera_zoomed", "magnitude_px=8", (1300,), tag="deck_high", moved=True),

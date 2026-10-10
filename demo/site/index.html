@@ -10,19 +10,7 @@
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body data-page="index">
-<header class="site-header">
-  <div class="wrap">
-    <a class="brand" href="index.html"><svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="8" width="16" height="14" rx="2" fill="var(--a)"/><rect x="13" y="10" width="16" height="14" rx="2" fill="var(--b)" fill-opacity=".85"/></svg>Projector drift</a>
-    <nav class="site-nav" aria-label="Pages">
-      <a href="index.html" data-page="index">Overview</a>
-      <a href="samples.html" data-page="samples">Sample data</a>
-      <a href="algorithm.html" data-page="algorithm">Algorithm</a>
-      <a href="tests.html" data-page="tests">Tests</a>
-    </nav>
-    <button class="theme-toggle" type="button" aria-label="Switch theme"></button>
-  </div>
-</header>
-<div class="status-strip"><div class="wrap"></div></div>
+<!-- header -->
 
 <main>
   <section class="hero">
@@ -32,7 +20,8 @@
       <p class="lead">Two projectors share one screen in a lecture hall, blended where they overlap so they read as a
         single picture. Over hours they drift. Today a professor checks by eye and presses the calibration
         software's <em>recalibrate</em> button. This project builds a camera-based check that answers the same question
-        every 30 seconds: <strong>YES</strong>, they have drifted far enough for someone in the room to notice, or
+        every <span data-v="common.config.values.ADJUSTABLE_INTERVAL_IN_SECONDS" data-fmt="duration"></span>: <strong>YES</strong>,
+        they have drifted far enough for someone in the room to notice, or
         <strong>NO</strong>.</p>
       <p class="lead">No hardware exists yet, so everything is developed against a <strong>simulator</strong> that renders the
         projectors, the screen, the room and the camera, and knows the true answer for every frame.</p>
@@ -40,7 +29,7 @@
         <div class="kpi"><div class="label">Tests passing</div><div class="value" id="kpi-tests">–</div><div class="sub" id="kpi-tests-sub"></div></div>
         <div class="kpi"><div class="label">Test scenarios</div><div class="value" data-v="common.counts.scenarios" data-fmt="int">–</div><div class="sub"><span data-v="common.counts.variants" data-fmt="int"></span> variants</div></div>
         <div class="kpi"><div class="label">Frames of ground truth</div><div class="value" data-v="common.counts.frames" data-fmt="int">–</div><div class="sub">one every 0.5 s of simulated time</div></div>
-        <div class="kpi"><div class="label">Build phases done</div><div class="value" id="kpi-phases">–</div><div class="sub">the simulator; the detector is next</div></div>
+        <div class="kpi"><div class="label">Build phases done</div><div class="value" id="kpi-phases">–</div><div class="sub" id="kpi-phases-sub"></div></div>
       </div>
     </div>
   </section>
@@ -49,14 +38,14 @@
     <div class="wrap cols wide-left">
       <div>
         <div class="eyebrow">What drift looks like</div>
-        <h2>Same frame, before and after projector B moved 8 pixels</h2>
+        <h2>Same frame, before and after projector B moved <span data-v="overview.hero.size_px"></span> pixels</h2>
         <p class="lead">This is a patch of the <strong>overlap</strong>, where both projectors light the same part of the screen,
           as the simulated camera records it. Drag the slider. On the left the projectors are aligned and the text is crisp.
-          On the right projector B has moved 8 of its pixels (<span data-v="samples.shift.steps.6.offset_mm" data-fmt="f1"></span> mm) and
-          every letter appears twice.</p>
+          On the right projector B has moved <span data-v="overview.hero.size_px"></span> of its pixels
+          (<span data-v="overview.hero.offset_mm" data-fmt="f1"></span> mm) and every letter appears twice.</p>
         <p>At 1 or 2 pixels the doubling is a slight blur. The check has to notice it at about the size a viewer
           would, and never mistake anything else for it.</p>
-        <p><a href="samples.html#shift">Step through every size from 0.25 to 8 pixels →</a></p>
+        <p><a href="samples.html#shift">Step through every size, <span id="hero-sizes"></span> →</a></p>
       </div>
       <figure class="fig" id="hero-compare"></figure>
     </div>
@@ -67,13 +56,13 @@
       <div class="eyebrow">How the check will work</div>
       <h2>Four ideas, in order of trust</h2>
       <p class="lead">The camera only ever sees the combined picture, whatever the lecture is showing. No test pattern
-        is projected. The detector is designed (<a href="algorithm.html">the algorithm page</a> walks through it)
-        but not built yet.</p>
+        is projected. The detector is designed first and built phase by phase; <a href="algorithm.html">the algorithm
+        page</a> walks through it.</p>
       <div class="grid four" style="margin-top:20px">
         <a class="card" href="algorithm.html#boundary"><div class="step-num">1</div><h3>Watch each projector's edges</h3>
           <p>Each projector's light covers a slightly tilted rectangle on the screen. Its outline shows faintly even in
             black frames, because a projector's black is never fully black. Measure both outlines after calibration, then
-            re-measure them every 30 seconds.</p><span class="go">Boundary analysis →</span></a>
+            re-measure them every <span data-v="common.config.values.ADJUSTABLE_INTERVAL_IN_SECONDS" data-fmt="duration"></span>.</p><span class="go">Boundary analysis →</span></a>
         <a class="card" href="algorithm.html#overlap"><div class="step-num">2</div><h3>Look inside the overlap</h3>
           <p>When the edges hint at a move, look at the overlap itself for doubled contours, for a band that is brighter
             or darker than at calibration, and for the picture's border splitting into two.</p><span class="go">Overlap check →</span></a>
@@ -81,7 +70,8 @@
           <p>Every measurement compares projector A with projector B. A bumped camera moves both, and a dimmer lamp
             changes brightness without moving anything, so neither can fake a YES.</p><span class="go">What must never cause YES →</span></a>
         <a class="card" href="algorithm.html#decision"><div class="step-num">4</div><h3>Decide carefully</h3>
-          <p>Say YES only after 3 of 4 checks agree. Go back to NO only well below the threshold. Answer "can't tell"
+          <p>Say YES only after <span data-v="common.config.values.YES_VOTES.0"></span> of
+            <span data-v="common.config.values.YES_VOTES.1"></span> checks agree. Go back to NO only well below the threshold. Answer "can't tell"
             rather than guess; that keeps the previous answer.</p><span class="go">Fusion and decision →</span></a>
       </div>
     </div>
@@ -91,8 +81,8 @@
     <div class="wrap">
       <div class="eyebrow">Where the project is</div>
       <h2>Build order</h2>
-      <p class="lead">Each phase ends with its tests passing, a dated finding with numbers, and a commit. The simulator
-        (phases 1 to 2c) is done. Phase 3 starts the detector.</p>
+      <p class="lead">Each phase ends with its tests passing, a dated finding with numbers, and a commit.
+        <span id="roadmap-now"></span></p>
       <div class="roadmap" id="roadmap-strip" style="margin-top:16px"></div>
       <p style="margin-top:16px"><a href="tests.html#phases">What each phase had to prove, and the numbers it reached →</a></p>
     </div>
@@ -118,10 +108,8 @@
 </div></footer>
 
 <script src="data/common.js"></script>
-<script src="data/tests.js"></script>
-<script src="data/samples.js"></script>
+<script src="data/overview.js"></script>
 <script src="assets/core.js"></script>
-<script src="assets/charts.js"></script>
 <script src="assets/page-index.js"></script>
 </body>
 </html>

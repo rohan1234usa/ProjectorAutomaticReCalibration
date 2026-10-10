@@ -101,7 +101,9 @@ Then open http://localhost:8000. The build renders about a hundred figures (abou
 standard quality), runs the default test suite and reads CLAUDE.md, docs/findings.md and
 detector.yaml into `out/site/`. `--samples fast` renders quicker. `--tests all` adds the slow
 tests. `--samples skip --tests skip` keeps the last build's figures and results, to refresh the
-pages alone. The pages also open straight from disk, without a server.
+pages alone; the pages then say when, and from which commit, those were made. The pages also open
+straight from disk, without a server, and `python3 -m demo.serve out/site` serves a finished build
+with nothing but the standard library.
 
 ## Layout
 
@@ -110,7 +112,7 @@ pages alone. The pages also open straight from disk, without a server.
 | `sim/` | The simulator: screen, bezel and markers, projectors and their arrangements, where they stand and the screen's gain, the calibration software's blending setup, content over time, perturbations, camera, render chain, ground truth and datasets. |
 | `detector/` | The detector, which only sees camera frames and the blending setup. So far it holds its configuration. |
 | `scripts/` | Command-line tools: make, view, check and compare datasets; build the demo site. The checkers keep their own code, apart from `sim/`. |
-| `demo/` | The demo site: which frames it shows, the figures drawn from them, the readers of the docs and the test run, and the hand-written pages. It uses `sim/`, never `detector/`. |
+| `demo/` | The demo site: which frames it shows, the figures drawn from them, the readers of the docs and the test run, and the hand-written pages. It uses `sim/` (and `scripts/visualize.py`), never `detector/`. |
 | `scenarios/` | One YAML file per test idea; `_lecture_hall.yaml` is the installation they share. |
 | `tests/` | The test suite. |
 

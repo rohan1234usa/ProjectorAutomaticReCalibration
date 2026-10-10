@@ -12,10 +12,15 @@ camera's view in that frame (which a knock changes):
   hotspots       on a gain screen, where each projector's light looks brightest
 
 Edge pieces are the boundary method's raw material (CLAUDE.md 4.2): each box outline cut into
-pieces about EDGE_PIECE_MM long. A piece on the combined image's outer boundary always shows
-against the unlit screen; a piece inside the other projector's box is an inner edge, visible only
-through black level in dark frames or through the blend ramp. Each piece can only tell how far
-its own edge moved across itself, along its outward normal.
+pieces about EDGE_PIECE_MM long, of three kinds:
+
+  outer   on the combined image's outline: always shows against the unlit screen;
+  inner   inside the other box and inside the content (CLAUDE.md section 2): bright content fades
+          it out, so it shows only through black level in dark frames, or through the blend ramp;
+  margin  inside the other box but outside the content rect, where both projectors show black:
+          its black-level step shows in every frame, but never as a content border.
+
+Each piece can only tell how far its own edge moved across itself, along its outward normal.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from demo.renders import Family
 from scripts.visualize import deepest_point, region_masks
 from sim.calibration import CalibrationSetup
 from sim.planar import apply_h, centroid, clip_convex, points_in_convex, rect_polygon
+from sim.truth import coarse_pitch_mm
 
 
 def _r(points: np.ndarray, digits: int = 1) -> list[list[float]]:
@@ -40,9 +46,14 @@ def rotate_cw(points: np.ndarray, height: int) -> np.ndarray:
     return np.stack([height - 1 - p[:, 1], p[:, 0]], axis=-1)
 
 
-def layers(fam: Family, facts: dict[str, Any], labels: bool = True, rotate: bool = False) -> dict[str, Any]:
-    """The true geometry of one frame in camera pixels (optionally turned 90° clockwise)."""
-    w, h = fam.scene.camera.resolution
+def layers(fam: Family, facts: dict[str, Any], labels: bool = True, rotate: bool = False,
+           size: tuple[int, int] | None = None) -> dict[str, Any]:
+    """The true geometry of one frame in camera pixels (optionally turned 90° clockwise).
+
+    ``facts["camera_h"]`` maps screen mm to the picture's pixels (pixel centres at integers); a
+    picture that is not the camera frame (the rectified canvas) passes its own map and `size`.
+    """
+    w, h = size or fam.scene.camera.resolution
     cam = facts["camera_h"]
 
     def px(poly_mm: np.ndarray) -> list[list[float]]:
@@ -76,7 +87,7 @@ def layers(fam: Family, facts: dict[str, Any], labels: bool = True, rotate: bool
 
 
 def edge_pieces(setup: CalibrationSetup, piece_mm: float = 80.0) -> list[dict[str, Any]]:
-    """Each box's outline in pieces about `piece_mm` long: owner, ends, outward normal, outer or inner."""
+    """Each box's outline in pieces about `piece_mm` long: owner, ends, outward normal, kind (see above)."""
     boxes = {n: setup.box_mm(n) for n in setup.names}
     content = rect_polygon(*setup.content_rect_mm)
     out = []
@@ -94,17 +105,22 @@ def edge_pieces(setup: CalibrationSetup, piece_mm: float = 80.0) -> list[dict[st
             for j in range(n):
                 p0, p1 = p + d * j / n, p + d * (j + 1) / n
                 mid = (p0 + p1) / 2
-                inner = bool(points_in_convex(boxes[other], mid, margin=0.5))
+                kind = "outer"
+                if points_in_convex(boxes[other], mid, margin=0.5):
+                    kind = "inner" if points_in_convex(content, mid, margin=-0.5) else "margin"
                 out.append({"owner": name, "p0": _r(p0, 2)[0], "p1": _r(p1, 2)[0], "mid": _r(mid, 2)[0],
-                            "normal": [round(float(normal[0]), 6), round(float(normal[1]), 6)],
-                            "kind": "inner" if inner else "outer",
-                            "in_content": bool(points_in_convex(content, mid, margin=-0.5))})
+                            "normal": [round(float(normal[0]), 6), round(float(normal[1]), 6)], "kind": kind})
     return out
 
 
-def geometry(setup: CalibrationSetup, screen_mm: tuple[float, float], piece_mm: float = 80.0) -> dict[str, Any]:
-    """An arrangement's calibrated geometry in mm, for the boundary toy."""
-    return {"screen": [float(screen_mm[0]), float(screen_mm[1])],
-            "a": _r(setup.box_mm("a"), 2), "b": _r(setup.box_mm("b"), 2),
-            "overlap": _r(setup.overlap(), 2), "content": [float(v) for v in setup.content_rect_mm],
-            "pieces": edge_pieces(setup, piece_mm)}
+def geometry(preset: str, setup: CalibrationSetup, screen_mm: tuple[float, float], piece_mm: float = 80.0) -> dict[str, Any]:
+    """An arrangement's calibrated geometry in mm, for the boundary toy: boxes, overlap, pieces, pixel pitch."""
+    pieces = [{k: p[k] for k in ("owner", "mid", "normal", "kind")} for p in edge_pieces(setup, piece_mm)]
+    return {"preset": preset, "screen": [float(screen_mm[0]), float(screen_mm[1])],
+            "a": _r(setup.box_mm("a"), 2), "b": _r(setup.box_mm("b"), 2), "overlap": _r(setup.overlap(), 2),
+            "pitch_mm": round(coarse_pitch_mm(setup), 5), "pieces": pieces}
+
+
+def piece_counts(pieces: list[dict[str, Any]]) -> dict[str, int]:
+    """How many pieces of each kind."""
+    return {kind: sum(p["kind"] == kind for p in pieces) for kind in ("outer", "inner", "margin")}

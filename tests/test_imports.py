@@ -1,10 +1,14 @@
 """Hard rules from CLAUDE.md section 3: detector/ imports nothing from sim/, and sim/ nothing from detector/.
 
-Only the harness (eval/, scripts/) may use both. The demo site (demo/) uses the simulator only, and
-neither package may use the demo.
+Only the harness (eval/, scripts/) may use both. The demo site (demo/) uses the simulator and the
+harness helper scripts/visualize.py, never detector/, and neither package may use the demo. Direct
+imports are read from the source; what importing the demo loads, through any helper, is checked in
+a fresh interpreter.
 """
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,6 +37,13 @@ def test_packages_stay_separate(package, forbidden):
         for f in files
     }
     assert not {f: m for f, m in offenders.items() if m}
+
+
+def test_the_demo_loads_no_detector_code_even_indirectly():
+    code = ("import sys, demo.site, demo.samples, scripts.make_site; "
+            "print(sorted(m for m in sys.modules if m.split('.')[0] == 'detector'))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True, cwd=REPO)
+    assert out.stdout.strip() == "[]"
 
 
 @pytest.mark.parametrize("script", ["check_dataset", "check_geometry", "check_timeline", "check_frames",

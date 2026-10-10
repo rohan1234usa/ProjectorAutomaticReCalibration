@@ -2,28 +2,24 @@
 
 - CLAUDE.md section 8 (build order): each phase's scope, done condition and measured status.
   A phase is *done* when its status cell starts with "done"; the first phase that is not is
-  *next*.
+  *next*. The pages say where the project stands from this alone, never in their own words.
 - CLAUDE.md section 7 (scenario catalogue): the question each scenario answers. The scenario
   files themselves give the variant and frame counts.
 - detector.yaml: every tunable with its value and comment, grouped under the comment headers.
   It is read as text, because the comments are the explanation and YAML loaders drop them;
   values still go through ``yaml.safe_load`` so they are the numbers the detector will read.
 - docs/findings.md: one entry per dated ``##`` heading.
-- The build environment: git commit, whether the tree had uncommitted changes, versions.
+- The build's provenance: when, from which git commit, and whether the tree had uncommitted changes.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import platform
 import re
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
-import cv2
-import numpy as np
 import yaml
 
 from demo.markdown import inline, table_rows, to_html
@@ -55,15 +51,22 @@ def phases(claude_md: str) -> list[dict[str, Any]]:
     for cells in rows[1:]:
         if len(cells) != 5:
             raise ValueError(f"CLAUDE.md section 8: a row has {len(cells)} cells, expected 5: {cells[0]}")
-        phase, scope, done, depends, status = cells
+        phase, scope, done, _, status = cells
         if status.lstrip("*").lower().startswith("done"):
             state = "done"
         else:
             state, seen_next = ("later", True) if seen_next else ("next", True)
         number, _, title = phase.partition(" ")
         out.append({"number": number, "title": title, "scope": inline(scope), "done_condition": inline(done),
-                    "depends": depends, "status": inline(status), "state": state})
+                    "status": inline(status), "state": state})
     return out
+
+
+def status(phases: list[dict[str, Any]]) -> dict[str, Any]:
+    """Where the build order stands, for the pages' status lines: what is done and what is next."""
+    nxt = next((p for p in phases if p["state"] == "next"), None)
+    return {"done": [p["number"] for p in phases if p["state"] == "done"], "total": len(phases),
+            "next": nxt["number"] if nxt else None, "next_title": nxt["title"] if nxt else None}
 
 
 def scenario_files(scenarios: Path) -> dict[str, list]:
@@ -139,29 +142,21 @@ def _git(*args: str) -> str | None:
 
 
 def environment() -> dict[str, Any]:
+    """When the build ran, the commit it ran from (None outside git), and whether the tree had changes."""
     commit = _git("rev-parse", "HEAD")
     status = _git("status", "--porcelain")
-    return {
-        "built": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-        "commit": commit,
-        "short": commit[:7] if commit else None,
-        "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
-        "dirty": bool(status) if status is not None else None,
-        "subject": _git("log", "-1", "--format=%s"),
-        "python": sys.version.split()[0],
-        "numpy": np.__version__,
-        "opencv": cv2.__version__,
-        "platform": platform.platform(terse=True),
-    }
+    return {"built": dt.datetime.now().astimezone().isoformat(timespec="seconds"), "commit": commit,
+            "short": commit[:7] if commit else None, "dirty": bool(status) if status is not None else None}
 
 
 def common(repo: Path = REPO) -> dict[str, Any]:
     """Everything the pages take from the documents (cheap: rebuilt on every build)."""
     claude_md = (repo / "CLAUDE.md").read_text()
     files = scenario_files(repo / "scenarios")
+    order = phases(claude_md)
     return {
-        "env": environment(),
-        "phases": phases(claude_md),
+        "phases": order,
+        "status": status(order),
         "catalogue": catalogue(claude_md, files),
         "counts": {"scenarios": len(files), "variants": sum(len(v) for v in files.values()),
                    "frames": sum(s.timing.n_frames for v in files.values() for s in v)},

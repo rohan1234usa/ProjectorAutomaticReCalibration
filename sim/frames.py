@@ -158,6 +158,19 @@ class FrameSource:
                 electrons += m * (person - electrons)
         return electrons
 
+    def unlit(self, state: FrameState) -> np.ndarray:
+        """Noiseless electrons from the room light and the bezel's own light alone: both projectors off.
+
+        The same cached images and weights :meth:`expected` starts from, so a figure can take the
+        room light away exactly as the frame added it.
+        """
+        key = state.camera_key
+        terms = [(state.ambient, self._room(key))]
+        bezel_light = self.scene.screen.bezel.light
+        if bezel_light > 0:
+            terms.append((bezel_light, self._bezel_light(key)))
+        return compose(terms)
+
     def frame(self, i: int, state: FrameState | None = None) -> np.ndarray:
         """Camera frame i: 16-bit, (h, w) mono or (h, w, 3) RGB."""
         electrons = self.expected(i, state)

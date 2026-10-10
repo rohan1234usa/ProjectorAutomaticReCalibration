@@ -918,11 +918,12 @@ localhost (`demo/`, `scripts/make_site.py`; README "Demo site"). It shows:
 - the planned detector explained step by step, with five small interactive models;
 - the test suite as run at build time, test by test, next to the §8 done conditions and this file.
 
-A standard-quality build takes about 65 s, with a 2.5 GB peak, 100 images and 8.7 MB. It runs
-338 tests (23 slow ones deselected). `demo/manifest.py` re-checks every chosen frame against its scenario
-before rendering, without rendering, so a changed scenario stops the build instead of mislabelling
-a picture. `demo/` uses `sim/` only; `tests/test_imports.py` now also holds it to never importing
-`detector/`, and holds both packages to never importing it.
+A standard-quality build takes about 63 s: 19 s for the default suite (354 tests, 23 slow ones
+deselected) and 39 s of rendering, with a 2.9 GB peak, 97 images and 8.4 MB. `demo/manifest.py`
+re-checks every chosen frame against its scenario before rendering, without rendering, so a changed
+scenario stops the build instead of mislabelling a picture. `demo/` uses `sim/` and the harness
+helper `scripts/visualize.py`, never `detector/`; `tests/test_imports.py` holds it to that, also
+through what importing it loads, and holds both packages to never importing it.
 
 Its algorithm figures compute, with ground truth at hand, what the detector will compute. They
 are teaching illustrations, not detector code, but their numbers are worth keeping. All of them
@@ -937,9 +938,10 @@ noise draws are shared, so a difference map shows only what B's move changed.
 
 **Hotspot** (`gain_screen`, matte, flat grey 0.5, B 2 px across, frame 1250).
 - The overlap dims by 0.7268% at its middle, 0.363% per projector pixel.
-- The model is b(x − u) − b(x) times L / (L + room + 2·black) = 0.911, with nothing fitted. It
-  gives 0.7269% and matches the noiseless profile to 2.1e-7 rms inside the overlap, 5 mm clear of
-  its edges.
+- The model is b(D⁻¹(x)) − b(x) times L / (L + room + 2·black) = 0.911, with nothing fitted: D is
+  where B's calibrated picture now lands (the truth's displacement map; x − u for this shift), and
+  L and the black levels come from the projector's own light model. It gives 0.7269% and matches
+  the noiseless profile to 2.1e-7 rms inside the overlap, 5 mm clear of its edges.
 - One noisy exposure, averaged along the overlap, stays within 2.3e-6 rms of the model.
 - §4.3's planning figure of 0.40% per pixel assumed no room light; at ambient 0.02 the dilution
   of 0.911 gives 0.364%.
@@ -972,12 +974,14 @@ floor; that rule is the illustration's, and Phase 6a should define its own.
 
 **Boundary evidence** (black frames 1517–1528 against 371–382, mean of 12, room light removed;
 per-pixel noise 16.8 e⁻ in one frame, 4.9 e⁻ in the mean).
-- Black level: 8.7 e⁻ per projector, 18.0 e⁻ in the overlap, on 262 e⁻ of room light.
-- With B moved 8.33 mm, the 50% crossings of B's raster edges moved 8.43 and 8.26 mm. A's moved
-  0.000. B's picture edge on a slide moved 8.333 mm.
+- Black level, at the middle of each region: 8.9 e⁻ where A shines alone, 8.8 e⁻ where B does,
+  18.0 e⁻ in the overlap, on 265 e⁻ of room light.
+- With B moved 8.33 mm, the 50% crossings of B's raster edges, averaged down the boxes' height,
+  moved 8.32 and 8.32 mm. A's moved 0.000. B's picture edge on a slide moved 8.333 mm.
 
-**Truth timelines.** `slow_drift` crosses TOLERANCE_MM (1.7 mm, 1.63 px) at 6470 s, 1.63 h after
-its onset at 600 s. That is the 1 px/h rate, quantized to 0.02 px.
+**Truth timelines.** `slow_drift` crosses TOLERANCE_MM (1.7 mm, 1.63 px) at 6468.0 s (frame 12936),
+1.63 h after its onset at 600 s. That is the 1 px/h rate, quantized to 0.02 px. Every frame is read
+for this; an earlier build sampled every 20th and reported 6470 s.
 
 ### Raised, not changed (for Phase 3, `classify.py`)
 
@@ -1003,3 +1007,21 @@ its onset at 600 s. That is the 1 px/h rate, quantized to 0.02 px.
 
 The demo applies both thresholds net of the room light and labels the result. It changes no
 config value.
+
+### Review pass before the pull request
+
+A review of the demo (PR #20) changed what some figures said; the numbers above are after it.
+- **Edge pieces.** CLAUDE.md §2 calls an edge inner only inside the other box *and* inside the
+  content. Inside the other box but outside the content, both projectors show black, so the
+  edge's black-level step shows in every frame. `rotated` has 5 such pieces, which had been
+  counted as inner: 118 outer, 33 inner, 5 margin. The other five presets have none.
+- **Pixels in the boundary toy** now use each arrangement's own coarser pitch: 0.729 mm for
+  `stacked` and 0.833 mm for `corner`, not side by side's 1.042 mm.
+- **Captions** of the nuisances come from the scenario file. The camera bump is (+3, −2) px,
+  3.6 px, which a hand-written caption had called 3 px.
+- **Provenance.** Each data file records when, from which commit and at which quality it was
+  made, so a page rebuilt with `--samples skip --tests skip` no longer credits reused figures or
+  test results to the new build.
+- **Speed.** The cepstrum's tile search tests many positions at once: the same tiles at fast and
+  standard quality, in 0.1 s instead of 3.2 s. Rendering takes 39 s instead of 42 s, and the
+  peak is 2.9 GB instead of 3.2 GB; the 2.5 GB first reported for it was low.

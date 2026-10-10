@@ -1,5 +1,6 @@
 /* Small SVG charts: lines (and steps), horizontal bars, stacked lanes. Thin marks, hairline grid,
-   a crosshair tooltip that lists every series, a legend for two or more series, and a data table. */
+   a crosshair tooltip that lists every series, a legend for two or more series, and a data table.
+   An axis may give `fmt` for its tick labels and `tip` for the tooltip and the table (default: fmt). */
 (function () {
   "use strict";
   const { el, svg, num } = window.Demo;
@@ -36,11 +37,13 @@
       el("span", {}, el("span", { class: `key${s.dash ? " dash" : ""}`, style: { background: s.color, borderColor: s.color } }), s.name)));
   }
 
-  function tableToggle(container, columns, rows) {
+  /* A button that shows the chart's numbers; `makeRows` runs on the first click only. */
+  function tableToggle(container, columns, makeRows) {
     const btn = el("button", { class: "datatoggle", type: "button", text: "Show the data" });
     const box = el("div", { class: "chart-table table-wrap", hidden: true });
     btn.addEventListener("click", () => {
       if (!box.childNodes.length) {
+        const rows = makeRows();
         const shown = rows.slice(0, 500);
         box.append(el("table", {}, el("thead", {}, el("tr", {}, columns.map((c) => el("th", { class: "num", text: c })))),
           el("tbody", {}, shown.map((r) => el("tr", {}, r.map((v) => el("td", { class: "num", text: v })))))));
@@ -60,6 +63,7 @@
     root.append(holder);
     container.append(root);
     const fx = spec.x.fmt || defaultFmt, fy = spec.y.fmt || defaultFmt;
+    const tx = spec.x.tip || fx, ty = spec.y.tip || fy;
     let lastW = 0;
 
     function draw() {
@@ -134,11 +138,11 @@
       const show = (px) => {
         const x = spec.x.min + ((px - m.l) / (W - m.l - m.r)) * (spec.x.max - spec.x.min);
         cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("visibility", "visible");
-        tip.replaceChildren(el("div", { class: "x", text: `${spec.x.name || "x"} ${fx(x)}${spec.x.unit || ""}` }),
+        tip.replaceChildren(el("div", { class: "x", text: `${spec.x.name || "x"} ${tx(x)}${spec.x.unit || ""}` }),
           ...spec.series.filter((se) => !se.noTip).map((se) => {
             const v = valueAt(se, x);
             return el("div", { class: "row" }, el("span", { class: "key", style: { background: se.color } }),
-              el("b", { text: v === null ? "–" : `${fy(v)}${spec.y.unit || ""}` }), el("span", { text: se.name }));
+              el("b", { text: v === null ? "–" : `${ty(v)}${spec.y.unit || ""}` }), el("span", { text: se.name }));
           }));
         tip.style.display = "block";
         const box = holder.getBoundingClientRect();
@@ -157,11 +161,22 @@
     }
     const tip = el("div", { class: "tip" });
     draw();
-    if (window.ResizeObserver) new ResizeObserver(() => draw()).observe(holder);
+    if (window.ResizeObserver) {
+      // Redraw on the next frame, not inside the observer (that would resize what it observes),
+      // and stop observing once the chart has been taken off the page (the toys redraw theirs).
+      let pending = 0;
+      const ro = new ResizeObserver(() => {
+        if (!holder.isConnected) { ro.disconnect(); cancelAnimationFrame(pending); return; }
+        if (!pending) pending = requestAnimationFrame(() => { pending = 0; if (holder.isConnected) draw(); });
+      });
+      ro.observe(holder);
+    }
     if (spec.table !== false) {
-      const xsAll = [...new Set(spec.series.flatMap((se) => se.points.map((p) => p[0])))].sort((a, b) => a - b);
-      tableToggle(root, [spec.x.name || "x", ...spec.series.map((se) => se.name)],
-        xsAll.map((x) => [fx(x), ...spec.series.map((se) => { const v = valueAt(se, x); return v === null ? "–" : fy(v); })]));
+      const unit = (u) => (u ? ` (${u.trim()})` : "");
+      tableToggle(root, [`${spec.x.name || "x"}${unit(spec.x.unit)}`, ...spec.series.map((se) => `${se.name}${unit(spec.y.unit)}`)], () => {
+        const xsAll = [...new Set(spec.series.flatMap((se) => se.points.map((p) => p[0])))].sort((a, b) => a - b);
+        return xsAll.map((x) => [tx(x), ...spec.series.map((se) => { const v = valueAt(se, x); return v === null ? "–" : ty(v); })]);
+      });
     }
     return root;
   }
@@ -182,7 +197,7 @@
       rows.append(el("div", { style: { fontSize: "14px", textAlign: "right", color: "var(--ink-2)" }, text: it.label }), bar);
     }
     root.append(rows);
-    if (spec.table !== false) tableToggle(root, [spec.labelName || "item", spec.valueName || "value"], spec.items.map((i) => [i.label, fv(i.value)]));
+    if (spec.table !== false) tableToggle(root, [spec.labelName || "item", spec.valueName || "value"], () => spec.items.map((i) => [i.label, fv(i.value)]));
     return root;
   }
 
@@ -197,13 +212,13 @@
         lane.name));
       line(root, {
         height: last ? 92 : 62, legend: false, table: false,
-        x: { ...spec.x, label: last ? spec.x.label : null, ticks: last ? spec.x.ticks : [], fmt: spec.x.fmt },
-        y: { min: lane.min, max: lane.max, ticks: lane.ticks, fmt: lane.fmt, unit: lane.unit },
+        x: { ...spec.x, label: last ? spec.x.label : null, ticks: last ? spec.x.ticks : [] },
+        y: { min: lane.min, max: lane.max, ticks: lane.ticks, fmt: lane.fmt, tip: lane.tip, unit: lane.unit },
         series: [{ name: lane.name, color: lane.color, points: lane.points, step: true }],
       });
     }
     return root;
   }
 
-  window.Charts = { line, bars, lanes, niceTicks, valueAt };
+  window.Charts = { line, bars, lanes };
 })();

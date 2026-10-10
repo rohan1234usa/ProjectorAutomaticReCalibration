@@ -1,13 +1,12 @@
 /* Tests page: the suite as run at build time, test by test; phases; findings. */
 (function () {
   "use strict";
-  const { D, $, el, restoreHash, num, int, fillValues } = window.Demo;
-  const OUTCOME = { passed: "passed", failed: "failed", error: "error", skipped: "skipped" };
+  const { D, $, el, restoreHash, num, int, provenance, fillValues } = window.Demo;
 
-  function header(T, C) {
-    const r = T.run, env = C.env || {};
-    $("#run-line").textContent = `Ran ${r.command.replace(/"/g, "'")} when the site was built: ${r.summary || "no summary"} (${num(r.wall_s, 0)} s wall clock). `
-      + `Python ${env.python}, commit ${env.short}${env.dirty ? " with uncommitted changes" : ""}.`;
+  function header(T) {
+    const r = T.run;
+    $("#run-line").textContent = `Ran ${r.command.replace(/"/g, "'")} ${provenance(T.meta)}: ${r.summary || "no summary"} `
+      + `(${num(r.wall_s, 0)} s wall clock), Python ${r.python}.`;
     const t = T.totals;
     const bad = t.failed + t.error;
     const tile = (label, value, sub) => el("div", { class: "kpi" }, el("div", { class: "label", text: label }), el("div", { class: "value", text: value }), el("div", { class: "sub", text: sub || "" }));
@@ -39,7 +38,7 @@
     function row(c) {
       const d = el("details");
       const summary = el("summary", {},
-        el("span", { class: `badge ${OUTCOME[c.outcome] || ""}`, text: c.outcome }),
+        el("span", { class: `badge ${c.outcome}`, text: c.outcome }),
         el("span", { class: "t-name" }, el("span", { text: c.title }), " ",
           el("span", { class: "file", text: `${c.file}::${c.func}` }), c.params ? el("span", { class: "params", text: ` [${c.params}]` }) : null,
           c.slow ? el("span", { class: "badge slow", text: "slow", style: { marginLeft: "6px" } }) : null),
@@ -119,7 +118,7 @@
       $("main").prepend(el("div", { class: "wrap" }, el("p", { class: "note", text: "The test results were not built. Run python -m scripts.make_site." })));
       return;
     }
-    header(T, C);
+    header(T);
     areas(T);
     explorer(T);
     files(T);
