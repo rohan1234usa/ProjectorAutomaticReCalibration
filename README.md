@@ -18,15 +18,19 @@ misalignments.
 ## Status
 
 Phases 1 and 2, the simulator, are done. It renders two edge-blended projectors in any of six
-arrangements, on a screen framed by a bezel with printed fiducial markers, through a locked
-16-bit mono camera that sees the whole screen or zooms on the overlap. Over time it:
+arrangements, on a matte or gain screen framed by a bezel with printed fiducial markers, through
+a locked 16-bit mono camera that sees the whole screen or zooms on the overlap. Over time it:
 - plays slides, photos, stripes and synthetic video;
 - moves the projectors by known amounts (shift, rotation, scale, keystone, on any schedule);
 - adds nuisances that must never cause a YES (camera knocks, lamp dimming, room light, people
   walking past, flicker, sharpening, black-level compensation);
 - records ground truth for every frame.
 
-`make_dataset` turns any of the 16 scenario files into a reproducible dataset.
+`make_dataset` turns any of the 17 scenario files into a reproducible dataset. Two checkers
+verify datasets with their own code, apart from the simulator: `check_dataset` holds every
+frame's truth to what its scenario asked for, and `compare_datasets` proves two runs identical.
+The disruptions that are still to be simulated are tracked as
+[GitHub issues](https://github.com/rohan1234usa/ProjectorAutomaticReCalibration/issues).
 
 Next is Phase 3, where the detector itself starts: its inputs and geometry (CLAUDE.md §8).
 
@@ -61,7 +65,19 @@ uv run python -m scripts.make_dataset scenarios/shift_sweep.yaml out/shift_sweep
 ```
 
 ```bash
-uv run python -m scripts.check_dataset out/shift_sweep
+uv run python -m scripts.check_dataset out/shift_sweep --rerender 10
+```
+
+`--rerender 10` also renders ten frames of each variant again, and up to ten of the stored ones,
+and compares them with the recorded hashes. To prove that a second run makes the same dataset,
+generate it again and compare the two:
+
+```bash
+uv run python -m scripts.make_dataset scenarios/shift_sweep.yaml out/shift_sweep_again --frames sample --jobs 2
+```
+
+```bash
+uv run python -m scripts.compare_datasets out/shift_sweep out/shift_sweep_again
 ```
 
 `--frames none` writes the ground truth alone in seconds. Any frame can be re-rendered from a
@@ -72,9 +88,9 @@ same frame. The slow, demo-scale tests run with `uv run pytest -m slow`.
 
 | Path | What it holds |
 |---|---|
-| `sim/` | The simulator: screen, bezel and markers, projectors and their arrangements, the calibration software's blending setup, content over time, perturbations, camera, render chain, ground truth and datasets. |
+| `sim/` | The simulator: screen, bezel and markers, projectors and their arrangements, where they stand and the screen's gain, the calibration software's blending setup, content over time, perturbations, camera, render chain, ground truth and datasets. |
 | `detector/` | The detector, which only sees camera frames and the blending setup. So far it holds its configuration. |
-| `scripts/` | Command-line tools. |
+| `scripts/` | Command-line tools: make, view, check and compare datasets. The checkers keep their own code, apart from `sim/`. |
 | `scenarios/` | One YAML file per test idea; `_lecture_hall.yaml` is the installation they share. |
 | `tests/` | The test suite. |
 

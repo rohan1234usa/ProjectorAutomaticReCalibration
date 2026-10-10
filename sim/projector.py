@@ -38,7 +38,7 @@ from sim.cfg import check_keys, num, pair
 from sim.planar import box_mm, jacobian_det, local_scale, raster_corners, scratch, translation, warp_linear
 from sim.screen import ScreenGrid
 
-_KEYS = {"resolution", "gamma", "brightness", "black_level", "color_balance"}
+_KEYS = {"resolution", "gamma", "brightness", "black_level", "color_balance", "position_mm"}  # position: sim/room.py
 
 REC709 = (0.2126, 0.7152, 0.0722)  # luminance weights of the R, G, B primaries' linear light
 
@@ -133,7 +133,8 @@ def from_config(cfg: Any) -> dict[str, Projector]:
         if "resolution" not in p:
             raise ValueError(f"projectors.{name}: resolution is required")
         resolution = pair(p.pop("resolution"), f"projectors.{name}.resolution", int)
-        kwargs: dict[str, Any] = {k: num(v, f"projectors.{name}.{k}") for k, v in p.items() if k != "color_balance"}
+        kwargs: dict[str, Any] = {k: num(v, f"projectors.{name}.{k}") for k, v in p.items()
+                                  if k not in ("color_balance", "position_mm")}
         if "color_balance" in p:
             kwargs["color_balance"] = tuple(num(c, f"projectors.{name}.color_balance") for c in p["color_balance"])
         out[name] = Projector(name=name, resolution=resolution, **kwargs)

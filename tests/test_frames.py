@@ -86,11 +86,16 @@ def test_mono_is_the_rec709_luminance_of_rgb():
     assert np.allclose(got, luminance, rtol=1e-5, atol=1e-3)
 
 
-def test_components_sum_to_one_pass():
+@pytest.mark.parametrize("gain, color", [(None, "mono"), ({"peak": 1.8}, "mono"), ({"peak": 1.8}, "rgb")])
+def test_components_sum_to_one_pass(gain, color):
     """Light adds linearly: the per-source images (room, bezel light, each projector, drawn with shared
-    scratch buffers) sum to one camera pass over the total radiance, to float32 rounding."""
+    scratch buffers) sum to one camera pass over the total radiance, to float32 rounding; on a gain
+    screen too, where each projector's light meets its own reflectance map, in mono and in RGB."""
     cfg = copy.deepcopy(TINY_BEZEL)
     cfg["screen"]["bezel"]["light"] = 0.01
+    cfg["camera"]["color"] = color
+    if gain:
+        cfg["screen"]["gain"] = gain
     cfg.update(duration_s=1, content={"items": [{"type": "deck", "slides": 2, "hold_s": 0.5, "border_frac": 0.1}]})
     scenario = scenario_from_dict(cfg)
     source = FrameSource(scenario)

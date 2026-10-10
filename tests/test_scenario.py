@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from sim.scenario import load_scenario, load_scenarios, scenario_from_dict
+from sim.state import frame_state
 from sim.sweep import variant_name
 from tests.scenes import TINY_SCENARIO
 
@@ -156,3 +157,15 @@ def test_a_zoom_too_tight_for_the_overlap_is_refused():
     cfg["camera"] = {"preset": "zoomed", "resolution": [480, 208], "px_per_mm": 4.0}
     with pytest.raises(ValueError, match="does not hold the whole overlap"):
         scenario_from_dict(cfg)
+
+
+@pytest.mark.parametrize("name", ["shift_sweep", "camera_zoomed"])
+def test_the_paired_sweeps_carry_the_source_feed(name):
+    """Both show what was sent 0.1 s earlier: frame 74 (t = 37.0123 s) still shows the first slide, which
+    the sender replaced at 37 s, while the feed already lists the second; frame 75 shows the second."""
+    scenario = load_scenarios(REPO / "scenarios" / f"{name}.yaml")[0]
+    assert scenario.reference == {"available": True, "lag_s": Fraction(1, 10)}
+    assert frame_state(scenario, 74).segments == (((0, 0, 0), Fraction(1)),)
+    assert frame_state(scenario, 75).segments == (((0, 0, 1), Fraction(1)),)
+    end = scenario.timing.time(74) + scenario.timing.exposure
+    assert scenario.sequence.sent_before(end, 2) == [(Fraction(37), (0, 0, 1)), (Fraction(0), (0, 0, 0))]

@@ -673,3 +673,239 @@ Their findings are fixed below. None of the changes alters a frame that was alre
   - the zoomed camera needs a vertical overlap;
   - `boundary_hidden` probably keeps the boundary visible;
   - the slide charts are laid out for side by side.
+
+## 2026-10-09 — Phase 2c: screen gain, dataset verification, the source feed on the shift sweeps
+
+Phase 2c finishes what Phase 2 deferred and left unverified. An audit of `main` after PR #2 found
+the simulator complete except for screen gain, and found that the "generate twice identically"
+done conditions had been checked by hand and that `check_dataset` trusted parts of what it
+checked. 2c builds the gain screen, the tools that check those claims, and the source feed that
+Phase 7 needs on `shift_sweep`; the remaining real-life disruptions are GitHub issues #3–#18.
+
+**Done condition met.**
+- **Gain screen:** at peak 1.8 and 2.4, in a flat gray frame of `gain_screen`, the camera's
+  brightness net of room light over the matte twin's equals the lobe's gain at each projector's
+  hotspot and 600 mm toward its own edge, within 1.0e-4 (table below; the test holds it to 0.1%).
+- **Matte is unchanged:** peak 1, or positions without gain, render bit-identical frames (tiny
+  scenes: still, slide change, shifted); every stored 2a/2b dataset passes `check_dataset
+  --rerender` before and after the gain code, with identical results: 32 variants, 87,600
+  metadata lines, 766 frames re-rendered to their recorded hashes, 169 PNGs re-hashed.
+- **Generate twice identically, now by a tool:** `gain_screen` (6 variants, 14,400 frames),
+  `shift_sweep` (13, 31,200) and `camera_zoomed` (8, 19,200), each generated with `--jobs 4`
+  and again with `--jobs 5`, are the same datasets by `compare_datasets`: every file but
+  `timing.json`, environment included, 64,800 frames and 135 PNGs. All three pass
+  `check_dataset --rerender 10 --strict` with nothing skipped.
+- **The checker catches what it used to trust:** a rotation recorded as a shift of equal offset
+  (the offset alone still matched), a wrong lamp gain, room light, knock or passer-by flag, a
+  dropped marker, a wrong frame time, a wrong picture or tag, a stale or missing PNG, a wrong
+  frame hash on re-render, and `setup.json` disagreeing with the scenario on the source feed.
+- **The source feed:** on `shift_sweep` and `camera_zoomed` it changes exactly the frames
+  predicted, 37 per variant (481 and 296 in all), in `content.segments`, `content.tag` and
+  `frame_sha256` only; truth is unchanged and all 105 stored PNGs are byte-identical.
+
+### What 2c built
+
+- **`sim/room.py`: positions and the gain screen.**
+  - `projectors.<p>.position_mm` and `camera.position_mm` place the lenses in the room (x, y on
+    the screen, z toward the room). Defaults: each projector 1.6 image widths in front of its
+    image's centre; the camera 1.5 screen widths away and 1.25 screen heights below the screen's
+    top edge, as the whole-screen camera's keystone implies. Demo: A (1205, 749.85, 3200), B
+    (2795, 750.15, 3200), camera (2000, 1875, 6000) mm.
+  - `screen.gain: {peak, lobe_deg, kind}`: G = 1 + (peak − 1)·exp(−½(α/lobe_deg)²), α the angle
+    between the direction to the camera and the mirror image of the incoming ray (`specular`) or
+    the ray back to the projector (`retro`). Each projector has its own hotspot: specular at
+    P_xy + (C_xy − P_xy)·pz/(pz + cz).
+  - Each projector's light meets its own "reflectance toward the camera" map, built once per
+    projector when the screen has gain: the matte map plus (G − 1)·ρ_screen times the screen's
+    share of each grid pixel, so the bezel, marker paper and wall stay matte and a pixel on the
+    screen's edge gains only for its screen part. It replaces the reflectance multiply in the
+    projector components, so a held slide still costs only noise; room and bezel light keep
+    the matte map.
+  - The positions never reach `setup.json` (a test holds the allowlist), and nothing reads them
+    on a matte screen.
+- **`scripts/compare_datasets.py`** (with `scripts/dataset_files.py`, the checkers' own reading
+  of a dataset): two runs are the same dataset when every file but `timing.json` agrees, the
+  environment in `dataset.json` aside (reported, never counted). Differing metadata lines are
+  diffed field by field ("37 frames differ, first frame 74, in content.segments, frame_sha256");
+  `--ignore-fields` handles datasets written before a field existed.
+- **`check_dataset`**, split into `check_geometry.py`, `check_timeline.py` and `check_frames.py`
+  (stored, re-rendered and paired frames) so each file stays under 300 lines and only
+  re-rendering imports `sim/`:
+  - every frame's `h_actual` is rebuilt from the request and the recorded multipliers (shifts by
+    their recorded vector, rotations and scales by m × the requested size about the requested
+    pivot, keystones along the requested axis with the recorded strength of the requested sign),
+    so the brute-force offset is measured on a verified homography, and a keystone at full
+    strength is also measured by brute force;
+  - `h_rel` from `h_actual`; `setup.json`'s source feed and exposure against the scenario; the
+    frame count;
+  - the timeline from the scenario text alone: frame times as exact fractions, the nuisance
+    state (room light, lamps, knocks quantized to 1%, passers-by, flicker, sharpening), the
+    pictures shown with their shares, tags and cuts (lag included), the knocked camera, and the
+    visible markers (all of those in view when nobody passes, a subset when someone does);
+  - stored PNGs re-hashed; `--rerender K` renders K spread frames and up to K stored ones again;
+  - a check that cannot run (no hashes, fields a dataset predates) is reported under `skipped`
+    or `paired_skipped_no_hashes` instead of passing silently; `--strict` fails on it.
+- **Catalogue:** `scenarios/gain_screen.yaml` (6 variants: peak 1, 1.8, 2.4 × shift 0, 2 px);
+  `shift_sweep` and `camera_zoomed` gain the source feed (lag 0.1 s), and stay paired.
+- **Visualizer:** a cross at each projector's hotspot on a gain screen, and `hotspot_mm` in its
+  summary.
+
+### Numbers
+
+**Gain screen** (`gain_screen`, frame 400, flat gray 0.5, noiseless; 21 × 21 camera-pixel
+patches ≈ 24 mm; A and B are mirror images, so B's numbers equal A's):
+
+| peak | where | lobe G | measured, net of room light | error | measured, with room light |
+|---|---|---|---|---|---|
+| 1.8 | hotspot (1481.5, 1141.3) | 1.8000 | 1.7999 | −4.0e-5 | 1.7328 |
+| 1.8 | 600 mm toward A's edge | 1.5760 | 1.5758 | −7.3e-5 | 1.5275 |
+| 2.4 | hotspot | 2.4000 | 2.3999 | −5.2e-5 | 2.2823 |
+| 2.4 | 600 mm toward A's edge | 2.0079 | 2.0077 | −1.0e-4 | 1.9231 |
+
+- **Room light dilutes the hotspot.** Gain applies to projector light only, and the room light
+  (0.02 of white, against 0.22 for gray 0.5) is not gained, so the camera sees 1.73 where the
+  screen's gain is 1.80. A first version of the demo test compared hotspot ratios with the lobe
+  and missed by 0.7%; this was the reason, and the test now subtracts the room-light image.
+- **The overlap is a trough of both lobes.** At peak 1.8, A's gain falls from 1.636 to 1.438
+  across the overlap (x = 1795 to 2205 mm) while B's rises from 1.438 to 1.636; at the centre
+  both are 1.546. On flat gray the camera sees 1.58 × the matte level at the overlap's edges and
+  1.50 at its centre, smooth and symmetric: no seam, but a 5% dip that the hotspot fit's lamp-gain
+  and trend terms must absorb (it is static, so it is part of the baseline). At the far edges of
+  the picture A's gain is 1.17 (x = 205) and B's 1.02.
+- **Cost:** a reflectance map is 114 MB per projector at demo scale `standard` (3456 × 8256
+  float32), built in 0.34 s, once per process; a gain frame with new content took 0.69 s
+  (including one map) against 0.26 s matte. `gain_screen` generated in 227 s with `--jobs 4`
+  (6 × 2400 frames) and in 252 s with `--jobs 5`; for comparison, the paired `shift_sweep`
+  took 504 and 447 s, and `camera_zoomed` 277 and 251 s.
+
+**Stored datasets, before and after the gain code** (`check_dataset --rerender 20`, `aligned_video`
+`--rerender 10`):
+
+| dataset | variants | lines | re-rendered | PNGs | result |
+|---|---|---|---|---|---|
+| `out/p2/run1/aligned_slides` | 1 | 3,600 | 25 | 6 | ok, 7 checks skipped (pre-2b schema) |
+| `out/p2/run1/shift_sweep` | 13 | 31,200 | 312 | 65 | ok, same 7 skipped; 15,990 paired frames |
+| `out/p2b/run1/camera_zoomed` | 8 | 19,200 | 192 | 40 | ok, nothing skipped; 9,840 paired frames |
+| `out/p2b/run1/aligned_nuisances` | 7 | 25,200 | 175 | 42 | ok, nothing skipped |
+| `out/p2b/run1/boundary_hidden` | 2 | 4,800 | 48 | 10 | ok, nothing skipped; 2,460 paired frames |
+| `out/p2b/run1/aligned_video` | 1 | 3,600 | 14 | 6 | ok, nothing skipped |
+
+- The new independent checks found no error in any stored dataset: the nuisance states of all 7
+  `aligned_nuisances` variants, the 0.1 s lag of `aligned_video`'s content (exposures spanning
+  two video frames, cuts and fades), and every knocked camera and visible-marker list agree with
+  the scenario text.
+- The 2a datasets predate six metadata fields (`content.frames_in_exposure` and five nuisance
+  fields), and the camera check needs one of them: the checker reports those seven checks as
+  skipped, and `--rerender` lists the six as fields the current code adds.
+- `compare_datasets` confirms the hand comparisons of Phase 2: `out/p2/run1` and `run2` are the
+  same datasets (34,800 frames; `run3`'s `aligned_slides` too), and so are `out/p2b/run1` and
+  `run2` (52,800 frames).
+
+**The source feed on the shift sweeps.** Content changes at T = 191c + {37, 74, 111, 148, 185,
+191} s, and frame 2T is exposed from T + 0.0123 s for 1/30 s. Without the feed's lag that
+exposure showed the new picture; with the projectors 0.1 s behind the sender it shows the old
+one, and no exposure straddles a change either way (0.046 s < 0.1 s). That predicts 37 frames
+per variant in 1200 s (six changes in each of six cycles, and one at 1183 s), none of them a
+stored PNG frame (0, 600, 1200, 1230, 1800). `compare_datasets` against the stored runs finds
+exactly those in all 21 variants: frames 74, 148, 222, 296, 370, 382, …, 2292, 2366, differing
+in `content.segments`, `content.tag` and `frame_sha256` only. The PNGs are byte-identical, and
+`scenario.yaml` and `setup.json` differ only in the reference block. (`out/p2/run1/shift_sweep`
+predates 2b, so that comparison ignores `content.frames_in_exposure` and `nuisances`.) The
+checker re-derives the same content from the scenario text, lag included, on every frame.
+
+### Departures and choices (raised, not silently changed)
+
+1. **Gain as a reflectance map per projector, not a gain map multiplied after it.** The same
+   physics, but exact on pixels that straddle the screen's edge (only the screen part gains),
+   and it replaces a multiply instead of adding one. `projector_irradiance` stays gain-free,
+   because irradiance is the light that lands; `screen_radiance` applies the gain, so the
+   components still sum to one camera pass (tested with and without gain).
+2. **Room and bezel light keep gain 1**, and the bezel, paper and wall stay matte. A real gain
+   screen also rejects room light arriving off axis; issue #5 proposes an `ambient_gain`.
+3. **A passer-by is lit by the gained projector light** (the occluder rescales the projector
+   components); a person is not the screen. Issue #3 proposes fixing it with the shadows.
+4. **The demo test measures the gain net of room light**, to 0.1%, instead of the planned 2% on
+   hotspot ratios, which room light dilutes (above).
+5. **`check_frames.py`** holds the PNG, re-render and pairing checks, apart from
+   `check_dataset.py`, so that file stays under 300 lines and the one import of `sim/` is
+   isolated (a test holds the checker scripts free of `sim/` at module level).
+6. **The checker now uses each frame's exact time**, phase_s + i × sample_every_s, rather than the
+   recorded float `t_s` read back as a decimal; `t_s` itself is checked against it.
+7. **A knocked camera is checked** against the frame-0 camera turned and shifted by each bump's
+   recorded strength. Frame 0's own camera is the reference: its pose is truth that no input
+   records.
+8. **The mistake tests for the new keys** live in `tests/test_room.py`, beside the model, rather
+   than in `tests/test_scenario.py`.
+
+### Review pass before merging
+
+A second read of everything 2c changed found four gaps in the checker and two small crashes. All
+are fixed, each with a test:
+
+1. **A shift beside another kind went unchecked.** A shift's recorded vector was held to its size
+   and direction only when every active perturbation was a shift. Beside a rotation, only the
+   brute-force offset ran, and it confirms that the recorded offset and `h_actual` agree, not
+   that the shift is the size asked for. Every active shift is now checked, whatever else is active.
+2. **A partial keystone was only self-consistent.** A ramped keystone's strength k was checked
+   against `h_actual` and its brute-force offset, both written from the same k. Now k / m must
+   be the same in every frame, which ties each partial frame to the full-strength one, whose size
+   is checked against the request.
+3. **`--rerender K` re-rendered everything on a `--frames all` dataset**, since every frame has a
+   PNG. It now renders up to K of the stored frames, evenly spread. A `--frames sample` dataset
+   stores 5 or 6 PNGs per variant, so with K = 10 or 20, as in every run above, the frames chosen
+   are the same as before.
+4. **An empty `metadata.jsonl` crashed the checker**; it now fails with a message.
+5. **The visualizer crashed on a retro-reflective screen seen from a projector's own distance**,
+   where that projector has no hotspot; it now leaves the hotspot out.
+6. **Clean-ups:** an unused constant is gone, and the pairing check moved beside the other
+   frame-hash checks.
+
+**The whole catalogue, truth only.** Every scenario was written with `--frames none` and checked
+with the strengthened checker:
+- 107 variants and 277,201 frames all pass, with nothing skipped;
+- the worst closed-form offset error is 9.9e-13 mm;
+- the 4,680 keystone frames of `scale_keystone`, measured by brute force, agree within
+  1.4e-14 mm, and their strength per unit m is constant;
+- the pairing check reports, rather than passes, the groups it cannot pair without frame hashes.
+
+**Code review on PR #19** (high effort, posted as inline comments) found seven things; six are
+fixed, each with a test where it concerns code:
+
+1. **The shift direction was checked against the line between the box centres**, not against
+   the inner-edge normal that defines `across`. They differ by 20.05° for projector B in the
+   `rotated` preset and by 22.38° in `corner`. So an `along` shift there would have been reported
+   as wrong (|cos| 0.34–0.38 against a 0.1 limit), and `across` passed only narrowly (0.92 against
+   0.9). The checker now derives the inner-edge normal with its own geometry
+   (`Geometry.across`) and holds every shift to its direction within 1e-9. The whole catalogue's
+   truth passes the exact check, the rotated and corner arrangements included.
+2. **A passer-by on a gain screen inherits the screen's gain.** This is left to issue #3: no
+   scenario combines the two yet.
+3. **`--rerender` accepted a negative K** and then rendered nothing; it is now refused.
+4. **The RGB gain branch of `screen_radiance` was untested.** The components-sum test now runs it.
+5. **Two recursive JSON differs** (the comparison's and the re-render's) are now one, in
+   `scripts/dataset_files.py`.
+6. **Each perturbation's fixed geometry was recomputed on every frame**: its pivot, reach,
+   angle or factor, and direction. It is now computed once per dataset (`Request`).
+7. **Open issues were described as done** in CLAUDE.md and in this entry; the wording now says
+   they propose the change.
+
+**Docs.**
+- CLAUDE.md §4.3 gave the zoomed echo floor as ≈ 1.4 mm. Its own formula gives 1.5 mm, because
+  `MIN_OFFSET_MM` binds there: 2.5 camera px are 1.44 mm at 1.74 px/mm. `camera_zoomed.yaml`
+  already said 1.5 mm; §4.3 now does too.
+- §5 lists the disruptions still to build, with their issue numbers; §11 asks what screen the real
+  installation has.
+
+**Tests:** 344 (322 default + 22 slow), and ruff is clean.
+
+### Issues filed for the rest
+
+Real-life disruptions that are not misalignment (decision 12): occluder cast shadows (#3),
+projector defocus (#4), room-bounce light (#5), flicker and sharpening on a schedule with a DLP
+waveform (#6), dynamic iris (#7), non-uniform room light (#8), camera creep and vibration (#9),
+one-projector overlays and dropouts (#10), a presenter standing for minutes (#11), room-light
+flicker (#12), reference-feed timing jitter (#13). Leftovers: recalibration mid-run (#14),
+hygiene from the audit (#15: zoomed refusal by name, a bounded camera-view cache, gain-map
+memory, pixel comparison). Scenarios: never-dark overlap content for `boundary_hidden` (#16),
+a thermal cycle with A or both perturbed (#17), `aligned_nuisances` paired with
+`aligned_slides` (#18).

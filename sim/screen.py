@@ -176,12 +176,13 @@ def surfaces(grid: ScreenGrid, screen: Screen) -> tuple[np.ndarray, np.ndarray]:
 
 
 def from_config(cfg: Mapping[str, Any]) -> Screen:
-    """Parse a scenario's ``screen`` block (its ``bezel.markers`` are read by ``sim/fiducials.py``)."""
-    check_keys(cfg, {"size_mm", "reflectance", "ambient", "wall_reflectance", "bezel"}, "screen")
+    """Parse a scenario's ``screen`` block (its ``bezel.markers`` are read by ``sim/fiducials.py``, its
+    ``gain`` by ``sim/room.py``)."""
+    check_keys(cfg, {"size_mm", "reflectance", "ambient", "wall_reflectance", "bezel", "gain"}, "screen")
     if "size_mm" not in cfg:
         raise ValueError("screen: size_mm is required")
     bezel_cfg = dict(cfg.get("bezel", {}) or {})
     check_keys(bezel_cfg, {"width_mm", "reflectance", "light", "markers"}, "screen.bezel")
     bezel = Bezel(**{k: num(v, f"screen.bezel.{k}") for k, v in bezel_cfg.items() if k != "markers"})
-    values = {k: num(v, f"screen.{k}") for k, v in cfg.items() if k not in ("size_mm", "bezel")}
+    values = {k: num(v, f"screen.{k}") for k, v in cfg.items() if k not in ("size_mm", "bezel", "gain")}
     return Screen(size_mm=pair(cfg["size_mm"], "screen.size_mm"), bezel=bezel, **values)

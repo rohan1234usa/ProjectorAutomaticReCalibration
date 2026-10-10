@@ -2,7 +2,9 @@
 # Projector B steps at 615 s (mid-interval, after the 600 s trusted window) by 0 (the aligned twin),
 # 0.25, 0.5, 1, 2, 4 or 8 projector pixels (1 px = 1.04 mm), either across the overlap edge (away
 # from A: the overlap narrows) or along it, then holds for 19 check intervals. Slide decks
-# alternate with 6 s of black, so dark frames show each projector's raster edges.
+# alternate with 6 s of black, so dark frames show each projector's raster edges. The source feed
+# is available, and the projectors show it 0.1 s after it is sent, so reference mode (Phase 7) runs
+# on the same datasets as blind mode.
 extends: _lecture_hall.yaml
 name: shift_sweep
 seed: 21
@@ -12,6 +14,7 @@ content:
   items:
     - {type: deck, densities: [low, medium, high], slides: 5, hold_s: 37, border_frac: 0.05}
     - {type: black, hold_s: 6}
+reference: {available: true, lag_s: 0.1}
 perturbation:
   b: {kind: shift, magnitude_px: 1, direction: across, schedule: {type: step, t0_s: 615}}
 sweep:

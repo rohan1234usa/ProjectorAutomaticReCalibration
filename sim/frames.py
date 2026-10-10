@@ -146,7 +146,8 @@ class FrameSource:
             camera = self._view(key)["camera"]
             # A person is lit like the screen behind them (projector light, room light) but
             # reflects only their own reflectance of it; projector images already carry the
-            # screen's reflectance, so they are rescaled. Later people pass in front.
+            # screen's reflectance, so they are rescaled. Later people pass in front. (On a gain
+            # screen those images also carry the screen's gain, which a person lacks: issue #3.)
             lit = compose(projectors)
             uniform = camera.vignetting_map() * np.float32(camera.electrons_per_unit_radiance * state.ambient)
             for reflectance, polygons in state.people:

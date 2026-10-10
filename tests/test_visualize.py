@@ -70,3 +70,26 @@ def test_patches_the_camera_cannot_see_report_null(tmp_path):
     summary = _run(tmp_path, cfg)
     assert summary["levels"]["unlit"] is None
     assert summary["levels"]["black_overlap"] is not None
+
+
+def test_hotspots_are_drawn_and_reported_only_on_a_gain_screen(tmp_path):
+    matte = _run(tmp_path, TINY_SCENARIO)
+    assert "hotspot_mm" not in matte
+    cfg = copy.deepcopy(TINY_SCENARIO)
+    cfg["name"] = "tiny_gain"
+    cfg["screen"]["gain"] = {"peak": 1.8}
+    cfg["projectors"]["a"]["position_mm"] = [150, 130, 300]
+    cfg["camera"]["position_mm"] = [300, 300, 900]
+    gained = _run(tmp_path, cfg)
+    assert np.allclose(gained["hotspot_mm"]["a"], [187.5, 172.5])  # P + (C - P) pz / (pz + cz)
+    assert set(gained["hotspot_mm"]) == {"a", "b"}
+
+
+def test_a_retro_screen_seen_from_the_projectors_distance_has_no_hotspot(tmp_path):
+    """The line through camera and projector then never meets the screen: B's hotspot alone is reported."""
+    cfg = copy.deepcopy(TINY_SCENARIO)
+    cfg["name"] = "tiny_retro"
+    cfg["screen"]["gain"] = {"peak": 1.8, "kind": "retro"}
+    cfg["projectors"]["a"]["position_mm"] = [150, 130, 900]
+    cfg["camera"]["position_mm"] = [300, 300, 900]
+    assert set(_run(tmp_path, cfg)["hotspot_mm"]) == {"b"}

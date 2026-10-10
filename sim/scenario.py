@@ -46,6 +46,8 @@ from sim.pictures import ContentGeometry
 from sim.planar import apply_h, homography_from_points, raster_corners
 from sim.projector import Projector
 from sim.render import QUALITY, Quality, Renderer
+from sim.room import Room
+from sim.room import from_config as room_from_config
 from sim.screen import Screen
 from sim.sequence import Sequence
 from sim.sequence import from_config as sequence_from_config
@@ -70,9 +72,11 @@ class Scene:
     markers: MarkerSet | None
     quality: Quality
     seed: int
+    room: Room  # where the projectors and camera stand, and the screen's gain (sim/room.py)
 
     def renderer(self) -> Renderer:
-        return Renderer(self.screen, self.projectors, self.setup, self.camera, self.quality, self.markers)
+        return Renderer(self.screen, self.projectors, self.setup, self.camera, self.quality, self.markers,
+                        room=self.room)
 
 
 @dataclass(frozen=True)
@@ -224,7 +228,8 @@ def scenario_from_dict(
     quality_name = data.get("quality", "standard")
     if quality_name not in QUALITY:
         raise ValueError(f"quality must be one of {sorted(QUALITY)}, got {quality_name!r}")
-    scene = Scene(name, the_screen, projectors, setup, cam, markers, QUALITY[quality_name], seed)
+    the_room = room_from_config(data, the_screen, setup)
+    scene = Scene(name, the_screen, projectors, setup, cam, markers, QUALITY[quality_name], seed, the_room)
 
     sample = seconds(data.get("sample_every_s", "1/2"), "sample_every_s")
     timing = Timing(

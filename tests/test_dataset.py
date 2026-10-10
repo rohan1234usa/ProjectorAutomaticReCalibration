@@ -1,4 +1,4 @@
-"""Datasets on disk: round trip, byte-identical reruns, nothing but the setup in setup.json, and the checker."""
+"""Datasets on disk: round trip, byte-identical reruns, and nothing but the setup in setup.json."""
 
 import json
 
@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 import yaml
 
-from scripts import check_dataset, make_dataset
+from scripts import make_dataset
 from sim.dataset import frame_hash, read_dataset, write_dataset
-from sim.scenario import load_scenarios
+from sim.scenario import load_scenarios, scenario_from_dict
 from tests.scenes import tiny_shift_sweep
 
 # What setup.json may contain, recursively: the blending setup, the marker layout, locked camera
@@ -87,22 +87,17 @@ def test_setup_json_holds_only_what_the_detector_may_read(sweep_file, tmp_path):
     assert h_cal.shape == (3, 3)
 
 
-def test_checker_passes_a_good_sweep_and_catches_a_wrong_offset(sweep_file, tmp_path, capsys):
-    out = tmp_path / "sweep"
-    make_dataset.main([str(sweep_file), str(out), "--frames", "sample"])
-    assert check_dataset.main([str(out)])
-    meta = out / "magnitude_px=1" / "metadata.jsonl"
-    original = meta.read_text()
-    lines = [json.loads(s) for s in original.splitlines()]
-    lines[8]["truth"]["offset_mm"] += 1e-5
-    meta.write_text("".join(json.dumps(line) + "\n" for line in lines))
-    assert not check_dataset.main([str(out)])
-    meta.write_text(original)
-    # The check reads what was asked for from scenario.yaml: a dataset whose truth matches a
-    # different size than the one requested must fail, even though it is self-consistent.
-    spec = out / "magnitude_px=4" / "scenario.yaml"
-    spec.write_text(spec.read_text().replace("magnitude_px: 4", "magnitude_px: 4.01"))
-    assert not check_dataset.main([str(out)])
+def test_setup_json_never_carries_positions_or_gain(tmp_path):
+    """The room (positions, screen gain) is truth about the installation: scenario.yaml keeps it, setup.json does not."""
+    cfg = {**tiny_shift_sweep(), "name": "gain"}
+    cfg.pop("sweep")
+    cfg["screen"] = {**cfg["screen"], "gain": {"peak": 1.8, "lobe_deg": 25}}
+    cfg["camera"] = {**cfg["camera"], "position_mm": [300, 300, 900]}
+    write_dataset(scenario_from_dict(cfg), tmp_path / "ds", frames="none")
+    text = (tmp_path / "ds" / "setup.json").read_text()
+    _within(json.loads(text), ALLOWED)
+    assert "position_mm" not in text and "peak" not in text and "lobe_deg" not in text
+    assert "position_mm" in (tmp_path / "ds" / "scenario.yaml").read_text()
 
 
 def test_one_variant_split_across_workers_gives_the_same_files(sweep_file, tmp_path):
@@ -114,43 +109,6 @@ def test_one_variant_split_across_workers_gives_the_same_files(sweep_file, tmp_p
     for f in files:
         if f.name not in ("timing.json", "dataset.json"):
             assert (tmp_path / "serial" / f).read_bytes() == (tmp_path / "split" / f).read_bytes(), str(f)
-
-
-def test_checker_covers_every_kind_and_continuous_schedules(tmp_path):
-    """Rotation, scale and keystone, stepped or ramped or drifting: closed forms and brute force all pass.
-
-    Truth only (--frames none), so it runs in seconds. A corrupted schedule value or offset must fail.
-    """
-    cfg = tiny_shift_sweep()
-    cfg["perturbation"] = {"b": {"kind": "rotation", "magnitude_px": 2, "pivot": "far_corner",
-                                 "schedule": {"type": "step", "t0_s": 3}}}
-    cfg["sweep"] = {
-        "perturbation.b.kind": ["rotation", "scale", "keystone"],
-        "perturbation.b.magnitude_px": [0, -1.5, 2],
-        "perturbation.b.schedule": [{"type": "step", "t0_s": 3}, {"type": "ramp", "t0_s": 3, "duration_s": 2},
-                                    {"type": "drift", "t0_s": 3, "rate_per_h": 1800}],
-    }
-    path = tmp_path / "kinds.yaml"
-    path.write_text(yaml.safe_dump(cfg, sort_keys=False))
-    out = tmp_path / "kinds"
-    make_dataset.main([str(path), str(out)])
-    assert check_dataset.main([str(out)])
-    stepped = check_dataset.check(out / "kind=scale__magnitude_px=2__schedule=step-3")
-    ramped = check_dataset.check(out / "kind=keystone__magnitude_px=-1.5__schedule=ramp-3-2")
-    assert stepped["closed_form_frames"] == 12 and ramped["brute_force_frames"] > 0  # a partial keystone: brute force
-
-    meta = out / "kind=rotation__magnitude_px=2__schedule=drift-3-1800" / "metadata.jsonl"
-    original = meta.read_text()
-    lines = [json.loads(s) for s in original.splitlines()]
-    lines[-1]["perturbation"][0]["applied"] *= 1.5  # off the schedule by far more than a quantum
-    meta.write_text("".join(json.dumps(line) + "\n" for line in lines))
-    assert not check_dataset.main([str(out)])
-    meta.write_text(original)
-    meta = out / "kind=keystone__magnitude_px=-1.5__schedule=ramp-3-2" / "metadata.jsonl"
-    lines = [json.loads(s) for s in meta.read_text().splitlines()]
-    lines[7]["truth"]["offset_mm"] += 0.01
-    meta.write_text("".join(json.dumps(line) + "\n" for line in lines))
-    assert not check_dataset.main([str(out)])
 
 
 def test_variants_index_keeps_variants_written_by_earlier_runs(sweep_file, tmp_path):
